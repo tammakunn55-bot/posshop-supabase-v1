@@ -1853,6 +1853,57 @@ img, video { max-width: 100%; height: auto; }
         document.getElementById('modal-bulk-image').classList.add('flex');
       };
 
+      function normalizeBulkProductName(value) {
+        return String(value || '')
+          .normalize('NFKC')
+          .replace(/[\u200B-\u200D\uFEFF]/g, '')
+          .toLowerCase()
+          .replace(/[“”\"\'`´]/g, '')
+          .replace(/[‐‑‒–—―]/g, '-')
+          .replace(/\s+/g, '')
+          .replace(/[\[\]{}()<>.,:;!?/\\|*_+=~^#%$@&]/g, '')
+          .trim();
+      }
+
+      function safeProductImageFileName(name) {
+        return String(name || 'สินค้า')
+          .normalize('NFKC')
+          .replace(/[\\/:*?\"<>|]/g, '-')
+          .replace(/[\u0000-\u001F]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 100) || 'สินค้า';
+      }
+
+      function getImageExtension(file) {
+        const ext = String(file?.name || '').split('.').pop()?.toLowerCase() || '';
+        if (/^(jpe?g|png|webp|gif)$/.test(ext)) return ext === 'jpeg' ? 'jpg' : ext;
+        const mime = String(file?.type || '').toLowerCase();
+        if (mime === 'image/png') return 'png';
+        if (mime === 'image/webp') return 'webp';
+        if (mime === 'image/gif') return 'gif';
+        return 'jpg';
+      }
+
+      function findBulkImageProduct(productName) {
+        const products = Object.values(db.products || {});
+        const raw = String(productName || '').trim();
+        const norm = normalizeBulkProductName(raw);
+        if (!norm) return null;
+
+        let hit = products.find(x => String(x?.name || '').trim().toLowerCase() === raw.toLowerCase());
+        if (hit) return hit;
+
+        const normalizedHits = products.filter(x => normalizeBulkProductName(x?.name) === norm);
+        if (normalizedHits.length) return normalizedHits[0];
+
+        const candidates = products.filter(x => {
+          const pn = normalizeBulkProductName(x?.name);
+          return pn && (pn.startsWith(norm) || norm.startsWith(pn));
+        });
+        return candidates.length === 1 ? candidates[0] : null;
+      }
+
       window.startBulkImageImport = async function() {
         const jsonInput = document.getElementById('bulk-json-input');
         const filesInput = document.getElementById('bulk-image-files-input');
@@ -1897,16 +1948,28 @@ img, video { max-width: 100%; height: auto; }
           const file = imageFilesMap[fileName];
           if (!file) continue;
 
-          // Find product by name
-          const p = Object.values(db.products).find(x => x.name.trim() === productName.trim());
+          // Find product by name using exact + normalized matching.
+          // This keeps the existing JSON workflow but tolerates harmless
+          // differences in spaces, punctuation and Unicode forms.
+          const p = findBulkImageProduct(productName);
           if (!p) continue;
 
           // Upload to Supabase storage if client exists
           let publicUrl = '';
           if (client) {
             try {
-              const path = `product-${p.id}-${Date.now()}.${file.name.split('.').pop()}`;
-              const { error: upErr } = await client.storage.from('product-images').upload(path, file, { upsert: true });
+              // Store the uploaded image with the PRODUCT NAME as the filename.
+              // Product ID is kept as a suffix so duplicate product names can never
+              // overwrite each other. Re-importing the same product uses the same
+              // deterministic path instead of creating endless new files.
+              const baseName = safeProductImageFileName(p.name);
+              const uniquePart = safeProductImageFileName(p.code || p.id || 'product');
+              const path = `${baseName}-${uniquePart}.${getImageExtension(file)}`;
+              const { error: upErr } = await client.storage.from('product-images').upload(path, file, {
+                upsert: true,
+                cacheControl: '31536000',
+                contentType: file.type || 'image/jpeg'
+              });
               if (!upErr) {
                 const { data } = client.storage.from('product-images').getPublicUrl(path);
                 publicUrl = data.publicUrl;
