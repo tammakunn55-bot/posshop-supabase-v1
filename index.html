@@ -2173,8 +2173,12 @@ img, video { max-width: 100%; height: auto; }
           document.getElementById('store-auth-password').value = '';
           window.showToast("เข้าสู่ระบบร้านค้าสำเร็จ");
           await window.refreshAuthStatus();
-          await window.checkAndBootstrapOwner?.();
-          window.forceSyncNow?.();
+          const needsBootstrap = await window.checkAndBootstrapOwner?.();
+          if (!needsBootstrap) {
+            await window.loadDatabaseState?.(true);
+            await window.forceSyncNow?.();
+            await window.loadDatabaseState?.(true);
+          }
         } catch (err) {
           window.showAlert("เข้าสู่ระบบไม่สำเร็จ", err.message || "อีเมลหรือรหัสผ่านไม่ถูกต้อง", true);
         }
@@ -2192,13 +2196,15 @@ img, video { max-width: 100%; height: auto; }
           const { data: { session } } = await client.auth.getSession();
           if (!session?.user) return;
           const { data: existing } = await client.from('app_users').select('id').eq('auth_user_id', session.user.id).maybeSingle();
-          if (existing) return; // already bootstrapped on a previous sign-in
+          if (existing) return false; // already bootstrapped on a previous sign-in
 
           document.getElementById('bootstrap-owner-name').value = db.storeName || '';
           document.getElementById('bootstrap-owner-pin').value = '';
           document.getElementById('modal-bootstrap-owner').classList.remove('hidden');
           document.getElementById('modal-bootstrap-owner').classList.add('flex');
+          return true;
         } catch (e) {
+          return false;
           // RLS hides app_users entirely from a not-yet-bootstrapped session, so this SELECT
           // failing/returning nothing is expected and not itself an error worth surfacing.
         }
@@ -2231,6 +2237,9 @@ img, video { max-width: 100%; height: auto; }
 
           window.closeModal('modal-bootstrap-owner');
           window.showToast(`ตั้งค่า "${name}" เป็นเจ้าของร้านสำเร็จ`);
+          await window.loadDatabaseState?.(true);
+          await window.forceSyncNow?.();
+          await window.loadDatabaseState?.(true);
         } catch (err) {
           if (String(err.message || '').includes('มี OWNER อยู่แล้ว')) {
             window.showAlert("มีเจ้าของร้านอยู่แล้ว", "ฐานข้อมูลนี้มีบัญชีเจ้าของร้านตั้งไว้แล้ว ถ้าต้องการสิทธิ์เต็ม กรุณาติดต่อเจ้าของร้านคนเดิม", true);
@@ -2375,13 +2384,28 @@ img, video { max-width: 100%; height: auto; }
                 barcode: v.barcode || null,
                 price: roundAmt(v.price),
                 cost_price: roundAmt(v.cost),
-                stock_quantity: roundStock(v.stock),
                 is_active: !p.isDeleted
               });
             });
           });
           if (variantRows.length > 0) {
-            const { error: varErr } = await client.from('product_variants').upsert(variantRows, { onConflict: 'id' });
+            // Stock is server-authoritative for variants that already exist. Only a brand-new
+            // variant is allowed to seed its initial local stock; after that, sales/returns/
+            // receipts update stock through the atomic RPCs, never by snapshot overwrite.
+            const variantIds = variantRows.map(r => r.id).filter(Boolean);
+            const existingVariantIds = new Set();
+            if (variantIds.length) {
+              const { data: existingRows, error: existingErr } = await client
+                .from('product_variants').select('id').in('id', variantIds);
+              if (existingErr) throw existingErr;
+              (existingRows || []).forEach(r => existingVariantIds.add(r.id));
+            }
+            const rowsToWrite = variantRows.map((r, idx) => {
+              const local = productsList.flatMap(p => p.variants || [])[idx];
+              if (!existingVariantIds.has(r.id) && local) r.stock_quantity = roundStock(local.stock);
+              return r;
+            });
+            const { error: varErr } = await client.from('product_variants').upsert(rowsToWrite, { onConflict: 'id' });
             if (varErr) throw varErr;
           }
 
@@ -2423,10 +2447,7 @@ img, video { max-width: 100%; height: auto; }
             name: c.name,
             phone: c.phone || null,
             address: c.address || '',
-            credit_limit: roundAmt(c.creditLimit || 0),
-            // เพิ่มขึ้นมาคู่กับ #6: ต้อง sync ยอดหนี้จริงขึ้นไปด้วย ไม่งั้น create_sale RPC ที่เพิ่ง
-            // เพิ่มการเช็ควงเงินเครดิตฝั่งเซิร์ฟเวอร์จะไม่มีข้อมูล debt ให้เทียบเลย
-            debt: roundAmt(c.debt || 0)
+            credit_limit: roundAmt(c.creditLimit || 0)
           }));
           if (customerRows.length > 0) {
             const { error: custErr } = await client.from('customers').upsert(customerRows, { onConflict: 'id' });
@@ -2588,7 +2609,41 @@ img, video { max-width: 100%; height: auto; }
             if (cashErr) throw cashErr;
           }
 
-          // 4. Accounts Payable — outstanding supplier debt from goods receipts
+          // 4. Purchase receipts that were created offline or while the network was down.
+          // The receipt RPC is the only authoritative path that changes server stock/cost.
+          for (const receipt of (db.purchaseOrders || [])) {
+            if (receipt._serverPurchaseOrderId) continue;
+            const supplier = db.suppliers?.[receipt.supplierId];
+            if (!supplier) continue;
+            try {
+              const supUUID = toUUID(receipt.supplierId);
+              await client.from('suppliers').upsert([{
+                id: supUUID, name: supplier.name, phone: supplier.phone || null, address: supplier.address || ''
+              }], { onConflict: 'id' });
+              const { data: poRow, error: poErr } = await client.from('purchase_orders').insert({
+                po_number: receipt.docRef, supplier_id: supUUID, status: 'ORDERED',
+                document_ref: receipt.docRef, credit_terms: receipt.terms || 30, ordered_at: receipt.receivedAt
+              }).select().single();
+              if (poErr) throw poErr;
+              const itemInserts = (receipt.items || []).map(x => ({
+                purchase_order_id: poRow.id, product_id: toUUID(x.productId),
+                variant_id: db.products?.[x.productId]?.variants?.[0]?.id ? toUUID(db.products[x.productId].variants[0].id) : null,
+                quantity: roundStock(x.qty), unit_cost: roundAmt(x.cost)
+              }));
+              const { data: itemRows, error: itemErr } = await client.from('purchase_order_items').insert(itemInserts).select();
+              if (itemErr) throw itemErr;
+              const receiveItems = itemRows.map(r => ({ purchase_order_item_id: r.id, received_quantity: r.quantity }));
+              const { error: recvErr } = await client.rpc('receive_purchase_order', { p_purchase_order_id: poRow.id, p_items: receiveItems });
+              if (recvErr) throw recvErr;
+              receipt._serverPurchaseOrderId = poRow.id;
+              window.persist?.();
+            } catch (receiptErr) {
+              console.warn('offline purchase receipt retry failed:', receiptErr);
+              // Continue syncing the remaining transactions; this receipt remains pending.
+            }
+          }
+
+          // 5. Accounts Payable — outstanding supplier debt from goods receipts
           // (window.confirmReceivePO). purchase_order_id links to the purchase_orders row
           // created by that receipt's own background sync (window.syncGoodsReceiptToSupabase),
           // which stores its server-generated id back onto the AP entry as
@@ -3341,10 +3396,21 @@ img, video { max-width: 100%; height: auto; }
         }
 
         const billId = getDailyBillId();
+        const billSubtotal = roundAmt(cart.reduce((sum, item) => sum + (item.qty * item.price), 0));
+        const discountInput = parseFloat(document.getElementById('cart-discount-input')?.value) || 0;
+        const discountType = document.getElementById('cart-discount-type')?.value || 'BAHT';
+        const billDiscount = roundAmt(Math.min(
+          billSubtotal,
+          discountType === 'PERCENT' ? (billSubtotal * discountInput / 100) : discountInput
+        ));
         const bill = {
           id: billId,
           time: Date.now(),
+          dateISO: new Date().toISOString(),
           items: cart.map(i => ({ ...i })),
+          subtotal: billSubtotal,
+          discountAmount: billDiscount,
+          discountType: discountType,
           total: total,
           method: activePayMethod,
           customerId: cid,
@@ -3391,7 +3457,7 @@ img, video { max-width: 100%; height: auto; }
       // Fire-and-forget authoritative sync of a single completed bill via the atomic RPC.
       window.syncBillToSupabaseRPC = async function(bill) {
         const client = window.getSupabaseClient();
-        if (!client) return; // offline / not configured — local state + manual sync remains the fallback
+        if (!client) return false; // offline / not configured — local state + manual sync remains the fallback
         try {
           // Ensure the cashier's app_users row exists in Supabase first — bills.user_id has a
           // foreign-key constraint, and this RPC can fire before the next full
@@ -3426,7 +3492,7 @@ img, video { max-width: 100%; height: auto; }
             // BUG FIX: ใช้ shift ของบิลเอง (เก็บไว้ตอนสร้างบิล) แทน db.currentShift ปัจจุบัน —
             // กันบิลที่ค้าง sync ข้ามกะ/ข้ามวันไปถูกผูกกับกะผิด
             p_shift_id: bill.shiftId ? toUUID(bill.shiftId) : null,
-            p_discount_amount: 0,
+            p_discount_amount: roundAmt(bill.discountAmount || 0),
             p_tax_amount: 0,
             p_payment_method: bill.method || 'CASH',
             p_items: items
@@ -3435,11 +3501,13 @@ img, video { max-width: 100%; height: auto; }
           bill._syncedViaRPC = true; // prevent syncTransactionsToSupabase from re-inserting this bill
           bill._serverBillId = data?.bill_id || null;
           window.updateSupabaseBadge(true);
+          return true;
         } catch (err) {
           // Non-fatal: the bill is already saved locally and will be picked up by the next
           // syncTransactionsToSupabase() batch sync. Surface it quietly via the sync badge only.
           console.warn('RPC checkout sync failed, will retry via batch sync:', err);
           window.updateSupabaseBadge(false);
+          return false;
         }
       };
 
@@ -4989,10 +5057,9 @@ img, video { max-width: 100%; height: auto; }
   // in-progress local edits to stock — are preserved rather than overwritten.
   window.loadDatabaseState=async function(silent){
     const c=sb(); if(!c) return false;
-    // Run each table fetch independently (allSettled, not all) so a problem with one table
-    // — e.g. a bad embedded-relationship query — doesn't block every other table from loading,
-    // and so the failure message can name exactly which table/column broke instead of a
-    // generic "pull failed" with no way to diagnose it.
+    // Full cloud restore: after a fresh login the local cache must be able to rebuild the
+    // operational state, not only products/customers/bills. Each table is fetched separately
+    // so one optional/legacy table cannot block the rest of the store from loading.
     const queries={
       categories:q('categories',x=>x.select('*').order('display_order')),
       products:q('products',x=>x.select('*').order('name')),
@@ -5000,137 +5067,208 @@ img, video { max-width: 100%; height: auto; }
       product_variants:q('product_variants',x=>x.select('*')),
       product_fractions:q('product_fractions',x=>x.select('*')),
       customers:q('customers',x=>x.select('*').order('name')),
-      bills:q('bills',x=>x.select('*, bill_items(*)').order('created_at',{ascending:false}).limit(200))
+      suppliers:q('suppliers',x=>x.select('*').order('name')),
+      app_users:q('app_users',x=>x.select('*')),
+      shifts:q('shifts',x=>x.select('*').order('opened_at',{ascending:false})),
+      bills:q('bills',x=>x.select('*, bill_items(*)').order('created_at',{ascending:false}).limit(500)),
+      purchase_orders:q('purchase_orders',x=>x.select('*, purchase_order_items(*)').order('ordered_at',{ascending:false}).limit(500)),
+      cash_ledger:q('cash_ledger',x=>x.select('*').order('created_at',{ascending:false}).limit(1000)),
+      accounts_payable:q('accounts_payable',x=>x.select('*').order('created_at',{ascending:false}).limit(500))
     };
     const keys=Object.keys(queries);
     const settled=await Promise.allSettled(Object.values(queries));
     const results={}, failures=[];
     keys.forEach((k,i)=>{
-      if(settled[i].status==='fulfilled'){ results[k]=settled[i].value; }
+      if(settled[i].status==='fulfilled') results[k]=settled[i].value||[];
       else { results[k]=[]; failures.push(`${k}: ${settled[i].reason?.message||settled[i].reason}`); }
     });
     if(keys.every((k,i)=>settled[i].status==='rejected')){
-      // Every single table failed — almost certainly not signed in, or URL/key wrong, rather
-      // than a per-table schema issue. Report that plainly instead of dumping 7 identical errors.
       console.error('loadDatabaseState: all queries failed', failures);
-      window.showAlert?.('ดึงข้อมูลไม่สำเร็จ','เชื่อมต่อฐานข้อมูลไม่ได้ทั้งหมด — ตรวจสอบว่าได้ "เข้าสู่ระบบร้านค้า" แล้วหรือยัง (ต้องล็อกอินก่อนจึงจะอ่าน/เขียนข้อมูลได้) และ Project URL/anon key ถูกต้อง',true);
+      window.showAlert?.('ดึงข้อมูลไม่สำเร็จ','เชื่อมต่อฐานข้อมูลไม่ได้ทั้งหมด — ตรวจสอบว่าเข้าสู่ระบบร้านค้าแล้ว และ Project URL/anon key ถูกต้อง',true);
       return false;
     }
     try{
-      const {categories:cats,products:prods,product_categories:links,product_variants:vars,product_fractions:fracs,customers:custs,bills}=results;
+      const {categories:cats,products:prods,product_categories:links,product_variants:vars,product_fractions:fracs,
+        customers:custs,suppliers:remoteSuppliers,app_users:remoteUsers,shifts:remoteShifts,bills:remoteBills,
+        purchase_orders:remotePOs,cash_ledger:remoteLedger,accounts_payable:remoteAP}=results;
       window.db=window.db||{};
 
-      // Categories — add any remote category not already present locally by name; never
-      // touch/remove existing local categories.
+      // ---------- categories ----------
       db.categories=db.categories||[];
-      let newCats=0;
+      const localCatByName=new Map(db.categories.map(x=>[x.name,x]));
       (cats||[]).forEach(x=>{
-        if(!db.categories.some(lc=>lc.name===x.name)){
-          db.categories.push({id:'cat-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:x.name,icon:x.icon||'📁',color:x.color||'#4f46e5'});
-          newCats++;
+        let local=localCatByName.get(x.name);
+        if(!local){
+          local={id:x.id,name:x.name,icon:x.icon||'📁',color:x.color||'#4f46e5',parentId:null};
+          db.categories.push(local); localCatByName.set(x.name,local);
         }
+        local.icon=x.icon||local.icon||'📁'; local.color=x.color||local.color||'#4f46e5';
+        local.parentId=x.parent_id||null;
       });
 
       const catById=Object.fromEntries((cats||[]).map(x=>[x.id,x.name]));
-      const catsByProduct={}; (links||[]).forEach(l=>(catsByProduct[l.product_id]=catsByProduct[l.product_id]||[]).push(catById[l.category_id]||l.category_id));
+      const catsByProduct={};
+      (links||[]).forEach(l=>(catsByProduct[l.product_id]=catsByProduct[l.product_id]||[]).push(catById[l.category_id]||l.category_id));
+      const fracsByVariant={};
+      (fracs||[]).forEach(f=>(fracsByVariant[f.variant_id]=fracsByVariant[f.variant_id]||[]).push(f));
+      const rawVarsByProduct={};
+      (vars||[]).forEach(v=>(rawVarsByProduct[v.product_id]=rawVarsByProduct[v.product_id]||[]).push(v));
 
-      // product_fractions are keyed by variant_id in this schema (not product_id), and
-      // quantity_ratio means "how many fraction units make up 1 whole stock unit" — the
-      // INVERSE of the local fractionMultiplier field ("how much of 1 stock unit does 1
-      // fraction unit use"), so it's converted back on the way in (1 / quantity_ratio).
-      const fracsByVariant={}; (fracs||[]).forEach(f=>(fracsByVariant[f.variant_id]=fracsByVariant[f.variant_id]||[]).push(f));
-
-      // product_variants columns here are variant_name / price / cost_price — direct values,
-      // no override-with-parent-fallback (this schema's `products` table has no price/cost
-      // columns of its own at all, unlike the previous schema this app used to target).
-      const rawVarsByProduct={}; (vars||[]).forEach(v=>(rawVarsByProduct[v.product_id]=rawVarsByProduct[v.product_id]||[]).push(v));
-
-      // Products — match an existing local product by SKU (the one field that's stable across
-      // both the local record and its Supabase row) so its ORIGINAL local id, and therefore its
-      // current local stock/price (which may have moved since the last push), is preserved.
-      // Only products genuinely new to this device (no local SKU match) get created, using the
-      // Supabase row id as their new local id.
+      // ---------- products ----------
       db.products=db.products||{};
-      const localIdBySku={};
-      Object.values(db.products).forEach(p=>{ if(p.code) localIdBySku[p.code]=p.id; });
-
-      let addedProd=0, matchedProd=0;
+      const localBySku={};
+      Object.values(db.products).forEach(p=>{if(p.code)localBySku[String(p.code)]=p;});
+      let addedProd=0,matchedProd=0;
       (prods||[]).forEach(p=>{
-        const sku=p.sku||'';
-        const existingId=sku?localIdBySku[sku]:null;
-        if(existingId && db.products[existingId]){
-          const existing=db.products[existingId];
-          existing.name=p.name;
-          existing.cat=catsByProduct[p.id]||existing.cat;
-          existing.image=p.image_url||existing.image;
-          if(p.min_stock_alert!=null)existing.minStock=+p.min_stock_alert;
+        const sku=String(p.sku||'');
+        const existing=localBySku[sku]||db.products[p.id]||null;
+        const remoteVariants=(rawVarsByProduct[p.id]||[]).map(v=>({
+          id:v.id,sizeName:v.variant_name||'ปกติ',barcode:v.barcode||v.sku||'',
+          cost:+(v.cost_price||0),price:+(v.price||0),stock:+(v.stock_quantity||0),
+          minStock:+(p.min_stock_alert||0),
+          imageUrl:v.image_url||'',
+          fractions:(fracsByVariant[v.id]||[]).filter(f=>f.is_active!==false).map(f=>({
+            id:f.id,fractionName:f.fraction_name,
+            fractionMultiplier:f.quantity_ratio>0?roundStock(1/f.quantity_ratio):1,
+            fractionPrice:+(f.price||0),barcode:f.barcode||''
+          }))
+        }));
+        if(existing){
+          existing.name=p.name; existing.code=sku||existing.code; existing.imageUrl=p.image_url||existing.image||'';
+          existing.image=p.image_url||existing.image||'📦'; existing.cat=catsByProduct[p.id]||existing.cat||[];
+          existing.minStock=+(p.min_stock_alert||existing.minStock||0);
+          if(remoteVariants.length) existing.variants=remoteVariants;
+          if(p.is_active===false) existing.isDeleted=true;
+          else delete existing.isDeleted;
           matchedProd++;
-        }else if(!existingId){
-          const remoteVariants=(rawVarsByProduct[p.id]||[]).map(v=>({
-            id:v.id,sizeName:v.variant_name||'ปกติ',barcode:v.barcode||'',
-            cost:+(v.cost_price||0),price:+(v.price||0),stock:+(v.stock_quantity||0),
-            fractions:(fracsByVariant[v.id]||[]).map(f=>({
-              id:f.id,fractionName:f.fraction_name,
-              fractionMultiplier:f.quantity_ratio>0?roundStock(1/f.quantity_ratio):1,
-              fractionPrice:+(f.price||0),barcode:f.barcode||''
-            }))
-          }));
-          db.products[p.id]={
-            id:p.id,name:p.name,code:sku,cat:catsByProduct[p.id]||[],image:p.image_url||'📦',
-            minStock:+(p.min_stock_alert||0),
-            variants:remoteVariants.length?remoteVariants:[{id:null,sizeName:'ปกติ',barcode:'',cost:0,price:0,stock:0,fractions:[]}]
-          };
+        }else{
+          db.products[p.id]={id:p.id,name:p.name,code:sku,cat:catsByProduct[p.id]||[],image:p.image_url||'📦',imageUrl:p.image_url||'',
+            minStock:+(p.min_stock_alert||0),isDeleted:p.is_active===false,
+            variants:remoteVariants.length?remoteVariants:[{id:null,sizeName:'ปกติ',barcode:'',cost:0,price:0,stock:0,fractions:[]}]};
           addedProd++;
         }
       });
 
-      // Customers — match by phone (or name if no phone on either side). This schema has no
-      // debt/accounts-receivable column, so a pulled-in new customer starts at debt:0 — an
-      // existing local record's tracked debt is never touched (there's nothing server-side to
-      // reconcile it against anyway).
+      // ---------- customers: Supabase debt is authoritative ----------
       db.customers=db.customers||{};
-      const localIdByPhone={}, localIdByName={};
-      Object.values(db.customers).forEach(cu=>{ if(cu.phone)localIdByPhone[cu.phone]=cu.id; localIdByName[cu.name]=cu.id; });
+      const localCustByKey=new Map();
+      Object.values(db.customers).forEach(cu=>{
+        if(cu.phone)localCustByKey.set('P:'+cu.phone,cu);
+        localCustByKey.set('N:'+cu.name,cu);
+      });
       let addedCust=0;
       (custs||[]).forEach(cu=>{
-        const existingId=(cu.phone&&localIdByPhone[cu.phone])||localIdByName[cu.name];
-        if(!existingId){
-          db.customers[cu.id]={id:cu.id,name:cu.name,phone:cu.phone||'',address:cu.address||'',debt:0,creditLimit:+(cu.credit_limit||0)};
+        const local=localCustByKey.get(cu.phone?'P:'+cu.phone:'N:'+cu.name)||db.customers[cu.id]||null;
+        if(local){
+          local.name=cu.name; local.phone=cu.phone||''; local.address=cu.address||'';
+          local.creditLimit=+(cu.credit_limit||0); local.debt=+(cu.debt||0); local.isActive=cu.is_active!==false;
+        }else{
+          db.customers[cu.id]={id:cu.id,name:cu.name,phone:cu.phone||'',address:cu.address||'',debt:+(cu.debt||0),creditLimit:+(cu.credit_limit||0),isActive:cu.is_active!==false};
           addedCust++;
         }
-        // else: a local record already tracks this customer — leave their local debt as-is.
       });
 
-      // Bills — additive only. Never overwrite or remove a local bill; only pull in remote
-      // bills this device doesn't have yet (e.g. rung up on a different terminal), matched by
-      // bill_number which is exactly the local bill's id.
+      // ---------- suppliers ----------
+      db.suppliers=db.suppliers||{};
+      const localSupByKey=new Map();
+      Object.values(db.suppliers).forEach(s=>{if(s.phone)localSupByKey.set('P:'+s.phone,s); localSupByKey.set('N:'+s.name,s);});
+      let addedSup=0;
+      (remoteSuppliers||[]).forEach(s=>{
+        const local=localSupByKey.get(s.phone?'P:'+s.phone:'N:'+s.name)||db.suppliers[s.id]||null;
+        if(local){local.name=s.name;local.phone=s.phone||'';local.address=s.address||'';local.terms=local.terms||30;local.isActive=s.is_active!==false;}
+        else{db.suppliers[s.id]={id:s.id,name:s.name,phone:s.phone||'',address:s.address||'',terms:30,isActive:s.is_active!==false};addedSup++;}
+      });
+
+      // ---------- employees / owner roster ----------
+      db.users=db.users||[];
+      const localUserByRemoteId=new Map(db.users.map(u=>[toUUID(u.id),u]));
+      let addedUsers=0;
+      (remoteUsers||[]).forEach(ru=>{
+        let local=localUserByRemoteId.get(ru.id)||db.users.find(u=>u.pinHash===ru.pin||u.name===ru.name);
+        if(local){
+          local.name=ru.name; local.role=ru.role||'CASHIER'; local.permissions=ru.permissions||rolePerm(local.role); local.pinHash=ru.pin||local.pinHash; local.serverId=ru.id; local.authUserId=ru.auth_user_id||null;
+        }else{
+          db.users.push({id:ru.id,name:ru.name,role:ru.role||'CASHIER',permissions:ru.permissions||rolePerm(ru.role||'CASHIER'),pinHash:ru.pin||'',serverId:ru.id,authUserId:ru.auth_user_id||null});
+          addedUsers++;
+        }
+      });
+      window.ensure?.();
+
+      // ---------- shifts ----------
+      db.shifts=db.shifts||[];
+      const localShiftByRemoteId=new Map(db.shifts.map(s=>[toUUID(s.id),s]));
+      (remoteShifts||[]).forEach(rs=>{
+        const local=localShiftByRemoteId.get(rs.id)||db.shifts.find(s=>Math.abs((s.startTime||0)-new Date(rs.opened_at).getTime())<2000);
+        const mapped={
+          id:local?.id||rs.id,startTime:new Date(rs.opened_at).getTime(),endTime:rs.closed_at?new Date(rs.closed_at).getTime():null,
+          openingCash:+(rs.opening_cash||0),cashOnHand:rs.closing_cash==null?null:+rs.closing_cash,
+          openedBy:local?.openedBy||'-',openedById:local?.openedById||rs.opened_by||null,
+          closedBy:local?.closedBy||'-',closedById:local?.closedById||rs.closed_by||null,movements:local?.movements||[],
+          summary:local?.summary||null,diff:local?.diff??0,diffNote:local?.diffNote||''
+        };
+        if(local)Object.assign(local,mapped);else db.shifts.push(mapped);
+      });
+      const openRemote=(remoteShifts||[]).find(s=>s.status==='OPEN'&&!s.closed_at);
+      if(openRemote){
+        db.currentShift=db.shifts.find(s=>toUUID(s.id)===openRemote.id)||db.shifts.find(s=>s.endTime==null)||null;
+      }else if(!db.currentShift||db.currentShift.endTime){db.currentShift=null;}
+
+      // ---------- bills ----------
       db.bills=db.bills||[];
       const localBillIds=new Set(db.bills.map(b=>b.id));
       let addedBills=0;
-      (bills||[]).forEach(b=>{
-        if(!localBillIds.has(b.bill_number)){
-          db.bills.push({
-            id:b.bill_number,time:new Date(b.created_at).getTime(),total:+b.total,
-            method:(b.payment_method||'CASH').toUpperCase(),customerId:b.customer_id||'GENERAL',
-            isRefunded:b.status==='CANCELLED',
-            items:(b.bill_items||[]).map(bi=>({id:bi.product_id,variantId:bi.variant_id,fractionId:bi.fraction_id,name:bi.item_name,price:+bi.unit_price,qty:+bi.quantity}))
-          });
-          addedBills++;
-        }
+      (remoteBills||[]).forEach(b=>{
+        const items=(b.bill_items||[]).map(bi=>({id:bi.product_id||bi.id,variantId:bi.variant_id,fractionId:bi.fraction_id,name:bi.item_name,price:+bi.unit_price,qty:+bi.quantity}));
+        const local=db.bills.find(x=>x.id===b.bill_number);
+        const mapped={id:b.bill_number,time:new Date(b.created_at).getTime(),dateISO:b.created_at,total:+b.total,subtotal:+(b.subtotal||b.total),discountAmount:+(b.discount_amount||0),method:(b.payment_method||'CASH').toUpperCase(),customerId:b.customer_id||'GENERAL',cashierId:b.user_id||null,shiftId:b.shift_id||null,isRefunded:b.status==='CANCELLED',items};
+        if(local)Object.assign(local,mapped);else{db.bills.push(mapped);addedBills++;}
+        localBillIds.add(b.bill_number);
+      });
+
+      // ---------- purchase orders + received quantities ----------
+      db.purchaseOrders=db.purchaseOrders||[];
+      let addedPO=0;
+      (remotePOs||[]).forEach(po=>{
+        const local=db.purchaseOrders.find(x=>x._serverPurchaseOrderId===po.id||x.docRef===po.document_ref||x.docRef===po.po_number);
+        const items=(po.purchase_order_items||[]).map(pi=>{
+          const p=db.products[pi.product_id];
+          const v=p?.variants?.find(v=>toUUID(v.id)===pi.variant_id)||p?.variants?.[0];
+          return {id:pi.id,productId:pi.product_id,productName:p?.name||pi.product_id,variantId:pi.variant_id,qty:+pi.quantity,cost:+pi.unit_cost,total:roundAmt((+pi.quantity||0)*(+pi.unit_cost||0)),receivedQuantity:+(pi.received_quantity||0)};
+        });
+        const mapped={id:local?.id||'GR-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),supplierId:po.supplier_id,docRef:po.document_ref||po.po_number||'',terms:+(po.credit_terms||30),status:po.status,items,receivedAt:po.received_at||po.ordered_at,_serverPurchaseOrderId:po.id};
+        if(local)Object.assign(local,mapped);else{db.purchaseOrders.push(mapped);addedPO++;}
+      });
+
+      // ---------- cash ledger / AP ----------
+      db.cashLedger=db.cashLedger||[];
+      const localLedgerIds=new Set(db.cashLedger.map(x=>toUUID(x.id)));
+      (remoteLedger||[]).forEach(cl=>{
+        if(localLedgerIds.has(cl.id))return;
+        db.cashLedger.push({id:cl.id,shiftId:cl.shift_id,type:cl.type,income:+(cl.income||0),expense:+(cl.expense||0),description:cl.description||'',refId:cl.ref_id||null,time:new Date(cl.created_at).getTime()});
+        localLedgerIds.add(cl.id);
+      });
+      (remoteAP||[]).forEach(ap=>{
+        const existing=db.cashLedger.find(x=>x.type==='ACCOUNTS_PAYABLE'&&toUUID(x.id)===ap.id)||db.cashLedger.find(x=>x.type==='ACCOUNTS_PAYABLE'&&x.docRef===ap.doc_ref);
+        const mapped={id:existing?.id||ap.id,type:'ACCOUNTS_PAYABLE',supplierId:ap.supplier_id,docRef:ap.doc_ref||'',amount:+(ap.amount||0),terms:+(ap.credit_terms||30),status:ap.status||'OPEN',createdAt:ap.created_at,paidAt:ap.paid_at||null,_serverPurchaseOrderId:ap.purchase_order_id||null};
+        if(existing)Object.assign(existing,mapped);else db.cashLedger.push(mapped);
       });
 
       persist();
       window.renderSaleHome?.(); window.renderStockTable?.(); window.renderSalesAR?.();
-      window.populateCustomerSelect?.(); window.populatePOPickers?.();
-      const summary=`หมวดหมู่ใหม่ ${newCats} • สินค้าใหม่ ${addedProd} (จับคู่ของเดิม ${matchedProd}) • ลูกค้าใหม่ ${addedCust} • บิลที่ดึงเพิ่ม ${addedBills}`;
+      window.populateCustomerSelect?.(); window.populatePOPickers?.(); window.renderPurchaseHistory?.(); window.renderShiftStatusBar?.();
+      const summary=`หมวดหมู่ ${cats?.length||0} • สินค้าใหม่ ${addedProd} (จับคู่ ${matchedProd}) • ลูกค้าใหม่ ${addedCust} • ซัพพลายเออร์ใหม่ ${addedSup} • พนักงานเพิ่ม ${addedUsers} • บิลเพิ่ม ${addedBills} • ใบรับสินค้าเพิ่ม ${addedPO}`;
       if(failures.length){
         console.warn('loadDatabaseState: partial failure on', failures);
-        window.showAlert?.('ดึงข้อมูลสำเร็จบางส่วน',`${summary}\n\n⚠️ ตารางต่อไปนี้ดึงไม่สำเร็จ: ${failures.join(' | ')}`,true);
-      } else if(!silent){
+        window.showAlert?.('ดึงข้อมูลสำเร็จบางส่วน',`${summary}\n\n⚠️ ตารางที่ดึงไม่สำเร็จ: ${failures.join(' | ')}`,true);
+      }else if(!silent){
         window.showAlert?.('ดึงข้อมูลจากคลาวด์สำเร็จ',summary,false);
       }
       return true;
-    }catch(e){ console.error('loadDatabaseState',e); window.showAlert?.('ดึงข้อมูลไม่สำเร็จ','เกิดข้อผิดพลาดระหว่างประมวลผลข้อมูลที่ดึงมา: '+(e.message||e),true); return false; }
+    }catch(e){
+      console.error('loadDatabaseState',e);
+      window.showAlert?.('ดึงข้อมูลไม่สำเร็จ','เกิดข้อผิดพลาดระหว่างประมวลผลข้อมูลที่ดึงมา: '+(e.message||e),true);
+      return false;
+    }
   };
 
   // Explicit, confirmed pull — replaces the old silent auto-pull on every page load.
@@ -5886,7 +6024,9 @@ window.syncGoodsReceiptToSupabase=async function(receipt, supplierId, docRef, te
     // future lookup of "which server PO did this receipt become") had nothing to link to —
     // this is the same real uuid returned by Postgres itself, not a local string id, so it's
     // used as-is rather than passed through toUUID().
-    if (apEntry) { apEntry._serverPurchaseOrderId = poRow.id; window.persist?.(); }
+    receipt._serverPurchaseOrderId = poRow.id;
+    if (apEntry) { apEntry._serverPurchaseOrderId = poRow.id; }
+    window.persist?.();
 
     const itemInserts = receipt.items.map(x => ({
       purchase_order_id: poRow.id,
