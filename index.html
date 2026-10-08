@@ -2482,8 +2482,11 @@ window.formatMoney = formatMoney;
           }
           return true;
         } catch (err) {
+          // Keep the original server error so forceSyncNow can show the real cause
+          // instead of replacing it with the generic catalog-sync message.
+          window._lastProductSyncError = err?.message || String(err);
           console.error("Products SQL sync error:", err);
-          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์สินค้า", err.message, true);
+          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์สินค้า", window._lastProductSyncError, true);
           return false;
         }
       };
@@ -2585,8 +2588,9 @@ window.formatMoney = formatMoney;
 
           return true;
         } catch (err) {
+          window._lastTransactionSyncError = err?.message || String(err);
           console.error("Transactions SQL sync error:", err);
-          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์ธุรกรรม", err.message, true);
+          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์ธุรกรรม", window._lastTransactionSyncError, true);
           return false;
         }
       };
@@ -2613,8 +2617,11 @@ window.formatMoney = formatMoney;
           const res2 = await window.syncTransactionsToSupabase(true);
           const qres = await window.flushSyncQueue(true);
 
-          if (!res1) { await window.syncProductsToSupabase(false); throw new Error('ซิงค์สินค้า/หมวดหมู่/ลูกค้าไม่สำเร็จ'); }
-          if (!res2) { await window.syncTransactionsToSupabase(false); throw new Error('ซิงค์บิล/กะ/รายรับ-จ่ายไม่สำเร็จ'); }
+          // Do not run the failed sync a second time just to show its error: that
+          // opened a second modal which was immediately overwritten by this generic one.
+          // Surface the original Supabase/PostgREST error in the single visible alert.
+          if (!res1) throw new Error('ซิงค์สินค้า/หมวดหมู่/ลูกค้าไม่สำเร็จ: ' + (window._lastProductSyncError || 'ไม่พบรายละเอียดข้อผิดพลาด — ตรวจสอบ Console'));
+          if (!res2) throw new Error('ซิงค์บิล/กะ/รายรับ-จ่ายไม่สำเร็จ: ' + (window._lastTransactionSyncError || 'ไม่พบรายละเอียดข้อผิดพลาด — ตรวจสอบ Console'));
 
           if (qres && qres.failed > 0) {
             window.updateSupabaseBadge(false);
