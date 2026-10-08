@@ -2338,11 +2338,24 @@ window.formatMoney = formatMoney;
             window.persist?.();
             console.warn('syncProductsToSupabase: renamed duplicate SKUs before sync', renamedSkus);
           }
+          // รูปที่ยังเป็น data:/blob: (อัปโหลดไม่สำเร็จตอนบันทึก) → ลองอัปขึ้น Storage ตอนนี้ ถ้าไม่ได้ก็ไม่ส่งขึ้นตาราง
+          for (const p of productsList) {
+            if (p.imageUrl && /^(data:|blob:)/.test(p.imageUrl)) {
+              try {
+                const blob = await (await fetch(p.imageUrl)).blob();
+                const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+                const path = `${toUUID(p.id)}_${Date.now()}.${ext}`;
+                const { error: upErr } = await client.storage.from('product-images').upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
+                if (!upErr) { p.imageUrl = client.storage.from('product-images').getPublicUrl(path).data.publicUrl; window.persist?.(); }
+                else console.warn('re-upload product image failed', p.name, upErr.message);
+              } catch (e) { console.warn('re-upload product image error', p.name, e); }
+            }
+          }
           const productRows = productsList.map(p => ({
             id: toUUID(p.id),
             sku: p.code || p.id,
             name: p.name,
-            image_url: p.imageUrl || null,
+            image_url: (p.imageUrl && /^https?:/.test(p.imageUrl)) ? p.imageUrl : null,
             min_stock_alert: roundStock((p.variants && p.variants[0] && p.variants[0].minStock) || 5),
             is_active: !p.isDeleted
           }));
@@ -2482,10 +2495,11 @@ window.formatMoney = formatMoney;
           }
           return true;
         } catch (err) {
-          // Keep the original server error so forceSyncNow can show the real cause
-          // instead of replacing it with the generic catalog-sync message.
-          window._lastProductSyncError = err?.message || String(err);
           console.error("Products SQL sync error:", err);
+          const _rls = err && (err.code === '42501' || /row-level security|permission denied/i.test(err.message || ''));
+          window._lastProductSyncError = _rls
+            ? 'ถูกบล็อกด้วยสิทธิ์ (RLS): บัญชีที่ล็อกอินอยู่ยังไม่ได้เป็น OWNER/MANAGER ใน app_users — ล็อกอินร้านด้วยอีเมลเจ้าของ แล้วตั้งค่าเจ้าของร้าน (ถ้ามี OWNER เดิมผูกกับบัญชีอื่น ให้รัน 0003_fixes.sql ข้อ 1) | ' + (err.message || '')
+            : (err && err.message) || String(err);
           if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์สินค้า", window._lastProductSyncError, true);
           return false;
         }
@@ -2588,9 +2602,8 @@ window.formatMoney = formatMoney;
 
           return true;
         } catch (err) {
-          window._lastTransactionSyncError = err?.message || String(err);
           console.error("Transactions SQL sync error:", err);
-          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์ธุรกรรม", window._lastTransactionSyncError, true);
+          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์ธุรกรรม", err.message, true);
           return false;
         }
       };
@@ -2617,11 +2630,8 @@ window.formatMoney = formatMoney;
           const res2 = await window.syncTransactionsToSupabase(true);
           const qres = await window.flushSyncQueue(true);
 
-          // Do not run the failed sync a second time just to show its error: that
-          // opened a second modal which was immediately overwritten by this generic one.
-          // Surface the original Supabase/PostgREST error in the single visible alert.
-          if (!res1) throw new Error('ซิงค์สินค้า/หมวดหมู่/ลูกค้าไม่สำเร็จ: ' + (window._lastProductSyncError || 'ไม่พบรายละเอียดข้อผิดพลาด — ตรวจสอบ Console'));
-          if (!res2) throw new Error('ซิงค์บิล/กะ/รายรับ-จ่ายไม่สำเร็จ: ' + (window._lastTransactionSyncError || 'ไม่พบรายละเอียดข้อผิดพลาด — ตรวจสอบ Console'));
+          if (!res1) { await window.syncProductsToSupabase(false); throw new Error('ซิงค์สินค้า/หมวดหมู่/ลูกค้าไม่สำเร็จ: ' + (window._lastProductSyncError || 'ดู Console')); }
+          if (!res2) { await window.syncTransactionsToSupabase(false); throw new Error('ซิงค์บิล/กะ/รายรับ-จ่ายไม่สำเร็จ'); }
 
           if (qres && qres.failed > 0) {
             window.updateSupabaseBadge(false);
@@ -4971,7 +4981,7 @@ window.formatMoney = formatMoney;
       categories:q('categories',x=>x.select('*').order('display_order')),
       products:q('products',x=>x.select('*').eq('is_active',true).order('name')),
       product_categories:q('product_categories',x=>x.select('*')),
-      product_variants:q('product_variants_view',x=>x.select('*').eq('is_active',true)),
+      product_variants:q('product_variants',x=>x.select('*').eq('is_active',true)),
       product_fractions:q('product_fractions',x=>x.select('*')),
       customers:q('customers',x=>x.select('*').eq('is_active',true).order('name')),
       bills:q('bills',x=>x.select('*, bill_items(*)').order('created_at',{ascending:false}).limit(1000))
@@ -5039,7 +5049,7 @@ window.formatMoney = formatMoney;
           const existing=db.products[existingId];
           existing.name=p.name;
           existing.cat=catsByProduct[p.id]||existing.cat;
-          existing.image=p.image_url||existing.image;
+          if(p.image_url&&/^https?:/.test(p.image_url))existing.imageUrl=p.image_url;
           if(p.min_stock_alert!=null)existing.minStock=+p.min_stock_alert;
           matchedProd++;
           if(!_hasPending){   // ให้สต็อกตรงกับเซิร์ฟเวอร์ + เพิ่มตัวเลือก (variant) ที่เครื่องอื่นเพิ่มไว้
@@ -5065,7 +5075,7 @@ window.formatMoney = formatMoney;
             }))
           }));
           db.products[p.id]={
-            id:p.id,name:p.name,code:sku,cat:catsByProduct[p.id]||[],image:p.image_url||'📦',
+            id:p.id,name:p.name,code:sku,cat:catsByProduct[p.id]||[],image:'📦',imageUrl:(p.image_url&&/^https?:/.test(p.image_url))?p.image_url:null,
             minStock:+(p.min_stock_alert||0),
             variants:remoteVariants.length?remoteVariants:[{id:null,sizeName:'ปกติ',barcode:'',cost:0,price:0,stock:0,fractions:[]}]
           };
