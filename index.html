@@ -2,7 +2,7 @@
 <html lang="th">
   <head>
     <meta charset="UTF-8">
-    <title>Smart POS Pro V9.60 - Enterprise Edition</title>
+    <title>Smart POS Pro Fresh v1.1 Stable - Enterprise Edition</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -1853,57 +1853,6 @@ img, video { max-width: 100%; height: auto; }
         document.getElementById('modal-bulk-image').classList.add('flex');
       };
 
-      function normalizeBulkProductName(value) {
-        return String(value || '')
-          .normalize('NFKC')
-          .replace(/[\u200B-\u200D\uFEFF]/g, '')
-          .toLowerCase()
-          .replace(/[“”\"\'`´]/g, '')
-          .replace(/[‐‑‒–—―]/g, '-')
-          .replace(/\s+/g, '')
-          .replace(/[\[\]{}()<>.,:;!?/\\|*_+=~^#%$@&]/g, '')
-          .trim();
-      }
-
-      function safeProductImageFileName(name) {
-        return String(name || 'สินค้า')
-          .normalize('NFKC')
-          .replace(/[\\/:*?\"<>|]/g, '-')
-          .replace(/[\u0000-\u001F]/g, '')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 100) || 'สินค้า';
-      }
-
-      function getImageExtension(file) {
-        const ext = String(file?.name || '').split('.').pop()?.toLowerCase() || '';
-        if (/^(jpe?g|png|webp|gif)$/.test(ext)) return ext === 'jpeg' ? 'jpg' : ext;
-        const mime = String(file?.type || '').toLowerCase();
-        if (mime === 'image/png') return 'png';
-        if (mime === 'image/webp') return 'webp';
-        if (mime === 'image/gif') return 'gif';
-        return 'jpg';
-      }
-
-      function findBulkImageProduct(productName) {
-        const products = Object.values(db.products || {});
-        const raw = String(productName || '').trim();
-        const norm = normalizeBulkProductName(raw);
-        if (!norm) return null;
-
-        let hit = products.find(x => String(x?.name || '').trim().toLowerCase() === raw.toLowerCase());
-        if (hit) return hit;
-
-        const normalizedHits = products.filter(x => normalizeBulkProductName(x?.name) === norm);
-        if (normalizedHits.length) return normalizedHits[0];
-
-        const candidates = products.filter(x => {
-          const pn = normalizeBulkProductName(x?.name);
-          return pn && (pn.startsWith(norm) || norm.startsWith(pn));
-        });
-        return candidates.length === 1 ? candidates[0] : null;
-      }
-
       window.startBulkImageImport = async function() {
         const jsonInput = document.getElementById('bulk-json-input');
         const filesInput = document.getElementById('bulk-image-files-input');
@@ -1948,28 +1897,16 @@ img, video { max-width: 100%; height: auto; }
           const file = imageFilesMap[fileName];
           if (!file) continue;
 
-          // Find product by name using exact + normalized matching.
-          // This keeps the existing JSON workflow but tolerates harmless
-          // differences in spaces, punctuation and Unicode forms.
-          const p = findBulkImageProduct(productName);
+          // Find product by name
+          const p = Object.values(db.products).find(x => x.name.trim() === productName.trim());
           if (!p) continue;
 
           // Upload to Supabase storage if client exists
           let publicUrl = '';
           if (client) {
             try {
-              // Store the uploaded image with the PRODUCT NAME as the filename.
-              // Product ID is kept as a suffix so duplicate product names can never
-              // overwrite each other. Re-importing the same product uses the same
-              // deterministic path instead of creating endless new files.
-              const baseName = safeProductImageFileName(p.name);
-              const uniquePart = safeProductImageFileName(p.code || p.id || 'product');
-              const path = `${baseName}-${uniquePart}.${getImageExtension(file)}`;
-              const { error: upErr } = await client.storage.from('product-images').upload(path, file, {
-                upsert: true,
-                cacheControl: '31536000',
-                contentType: file.type || 'image/jpeg'
-              });
+              const path = `product-${p.id}-${Date.now()}.${file.name.split('.').pop()}`;
+              const { error: upErr } = await client.storage.from('product-images').upload(path, file, { upsert: true });
               if (!upErr) {
                 const { data } = client.storage.from('product-images').getPublicUrl(path);
                 publicUrl = data.publicUrl;
@@ -2212,8 +2149,8 @@ img, video { max-width: 100%; height: auto; }
             // โปรเจกต์ที่ปิดการยืนยันอีเมลไว้ — ล็อกอินได้ทันทีหลังสมัคร ไปต่อ bootstrap ได้เลย
             window.showToast("สมัครบัญชีสำเร็จ — เข้าสู่ระบบให้อัตโนมัติ");
             await window.refreshAuthStatus();
-            await window.checkAndBootstrapOwner?.();
-            window.forceSyncNow?.();
+            const needsBootstrap = await window.checkAndBootstrapOwner?.();
+            if (!needsBootstrap) await window.loadDatabaseState?.(true);
           } else {
             // ค่าเริ่มต้นของ Supabase คือต้องกดยืนยันอีเมลก่อนถึงจะมี session — แจ้งให้ชัดเจน
             // กันคนงงว่าทำไมสมัครแล้วแต่ยังเข้าระบบไม่ได้ทันที
@@ -2238,8 +2175,8 @@ img, video { max-width: 100%; height: auto; }
           await window.refreshAuthStatus();
           const needsBootstrap = await window.checkAndBootstrapOwner?.();
           if (!needsBootstrap) {
-            await window.loadDatabaseState?.(true);
-            await window.forceSyncNow?.();
+            // Login is a Cloud → Local operation only. Never push the device's stale
+            // local cache back to Supabase automatically during login.
             await window.loadDatabaseState?.(true);
           }
         } catch (err) {
@@ -2300,8 +2237,8 @@ img, video { max-width: 100%; height: auto; }
 
           window.closeModal('modal-bootstrap-owner');
           window.showToast(`ตั้งค่า "${name}" เป็นเจ้าของร้านสำเร็จ`);
-          await window.loadDatabaseState?.(true);
-          await window.forceSyncNow?.();
+          // The owner row was created authoritatively by the RPC above. Pull the
+          // resulting cloud state into the local cache; do not force local → cloud sync.
           await window.loadDatabaseState?.(true);
         } catch (err) {
           if (String(err.message || '').includes('มี OWNER อยู่แล้ว')) {
@@ -2459,7 +2396,7 @@ img, video { max-width: 100%; height: auto; }
             const existingVariantIds = new Set();
             if (variantIds.length) {
               const { data: existingRows, error: existingErr } = await client
-                .from('product_variants').select('id').in('id', variantIds);
+                .from('product_variants_view').select('id').in('id', variantIds);
               if (existingErr) throw existingErr;
               (existingRows || []).forEach(r => existingVariantIds.add(r.id));
             }
@@ -2529,24 +2466,26 @@ img, video { max-width: 100%; height: auto; }
             if (supErr) throw supErr;
           }
 
-          // 8. app_users — replaces the old separate profiles/employees split. auth_user_id is
-          // deliberately left NULL for PIN-only staff (nullable by design in this schema) —
-          // only the store owner's row needs a real auth_user_id, set once via
-          // window.bootstrapFirstOwner. Only the SHA-256 hash is ever written to `pin`, never
-          // the raw digits.
-          const userRows = (db.users || [])
-            .filter(u => u.pinHash)
-            .map(u => ({
-              id: toUUID(u.id),
-              name: u.name,
-              pin: u.pinHash,
-              role: u.role || 'CASHIER',
-              permissions: u.permissions || [],
-              is_active: true
-            }));
-          if (userRows.length > 0) {
-            const { error: userErr } = await client.from('app_users').upsert(userRows, { onConflict: 'id' });
-            if (userErr) throw userErr;
+          // 8. app_users — only OWNER/MANAGER may write the staff roster under SQL RLS.
+          // CASHIER devices must not try to upsert app_users during a normal product sync;
+          // the owner/manager creates the staff row first, and checkout references that row.
+          // This prevents an otherwise harmless product sync from failing because a cashier
+          // cannot write the protected employee table.
+          if (window.canDo?.('ALL')) {
+            const userRows = (db.users || [])
+              .filter(u => u.pinHash)
+              .map(u => ({
+                id: toUUID(u.id),
+                name: u.name,
+                pin: u.pinHash,
+                role: u.role || 'CASHIER',
+                permissions: u.permissions || [],
+                is_active: true
+              }));
+            if (userRows.length > 0) {
+              const { error: userErr } = await client.from('app_users').upsert(userRows, { onConflict: 'id' });
+              if (userErr) throw userErr;
+            }
           }
 
           if (renamedSkus.length > 0 && !isQuiet) {
@@ -2739,6 +2678,7 @@ img, video { max-width: 100%; height: auto; }
         }
       };
 
+      // Manual recovery/sync only. This function is intentionally NOT called by login.
       window.forceSyncNow = async function() {
         const client = window.getSupabaseClient();
         if (!client) {
@@ -3522,18 +3462,9 @@ img, video { max-width: 100%; height: auto; }
         const client = window.getSupabaseClient();
         if (!client) return false; // offline / not configured — local state + manual sync remains the fallback
         try {
-          // Ensure the cashier's app_users row exists in Supabase first — bills.user_id has a
-          // foreign-key constraint, and this RPC can fire before the next full
-          // syncProductsToSupabase() batch has ever pushed the staff roster.
-          if (bill.cashierId) {
-            const u = (db.users || []).find(x => x.id === bill.cashierId);
-            if (u?.pinHash) {
-              await client.from('app_users').upsert(
-                [{ id: toUUID(u.id), name: u.name, pin: u.pinHash, role: u.role || 'CASHIER', permissions: u.permissions || [], is_active: true }],
-                { onConflict: 'id' }
-              );
-            }
-          }
+          // The cashier row must already exist in app_users. Employee creation is an
+          // OWNER/MANAGER operation and is synced separately; checkout must not attempt to
+          // bypass that RLS boundary.
 
           // create_sale computes subtotal/total itself from these line items server-side (it
           // does NOT take a client-supplied total) — item_name and fraction_id are required
@@ -4041,7 +3972,7 @@ img, video { max-width: 100%; height: auto; }
           const c = sb();
           if (!c) return;
           for (const id of mergedAwayIds) {
-            try { await c.from('products').delete().eq('id', toUUID ? toUUID(id) : id); } catch (e) { console.warn('cleanup delete failed for merged product', id, e); }
+            // Do not silently delete Cloud products during automatic grouping. Any explicit deletion must go through delete_entity().
           }
         })();
         window.syncProductsToSupabase?.(true);
@@ -4439,13 +4370,6 @@ img, video { max-width: 100%; height: auto; }
       };
       // Alias: showView() calls this name specifically when opening the po-receive view.
       window.renderPOPicker = window.populatePOPickers;
-
-      window.confirmReceivePO = function() {
-        // Superseded by the atomic version in the Enterprise Management Repair Layer
-        // (creates the purchase-order record, sets accounts payable, and syncs stock/cost
-        // to Supabase). Kept only as a safety no-op in case that layer fails to load.
-        return window.showAlert ? window.showAlert("เกิดข้อผิดพลาด", "ไม่สามารถโหลดระบบรับสินค้าได้ กรุณารีเฟรชหน้าเว็บ", true) : alert("กรุณารีเฟรชหน้าเว็บ");
-      };
 
       window.openMasterSettingsModal = function(tabKey) {
         document.getElementById('set-store-name').value = db.storeName;
@@ -5120,6 +5044,9 @@ img, video { max-width: 100%; height: auto; }
   // in-progress local edits to stock — are preserved rather than overwritten.
   window.loadDatabaseState=async function(silent){
     const c=sb(); if(!c) return false;
+    // v1.1 rule: Supabase is the source of truth for authenticated cloud state.
+    // This function only performs Cloud → Local hydration; it never pushes local data.
+
     // Full cloud restore: after a fresh login the local cache must be able to rebuild the
     // operational state, not only products/customers/bills. Each table is fetched separately
     // so one optional/legacy table cannot block the rest of the store from loading.
@@ -5127,7 +5054,7 @@ img, video { max-width: 100%; height: auto; }
       categories:q('categories',x=>x.select('*').order('display_order')),
       products:q('products',x=>x.select('*').order('name')),
       product_categories:q('product_categories',x=>x.select('*')),
-      product_variants:q('product_variants',x=>x.select('*')),
+      product_variants:q('product_variants_view',x=>x.select('*')),
       product_fractions:q('product_fractions',x=>x.select('*')),
       customers:q('customers',x=>x.select('*').order('name')),
       suppliers:q('suppliers',x=>x.select('*').order('name')),
@@ -5187,7 +5114,7 @@ img, video { max-width: 100%; height: auto; }
         const existing=localBySku[sku]||db.products[p.id]||null;
         const remoteVariants=(rawVarsByProduct[p.id]||[]).map(v=>({
           id:v.id,sizeName:v.variant_name||'ปกติ',barcode:v.barcode||v.sku||'',
-          cost:+(v.cost_price||0),price:+(v.price||0),stock:+(v.stock_quantity||0),
+          cost:v.cost_price==null?(existing?.variants?.find(ev=>toUUID(ev.id)===v.id)?.cost||0):+(v.cost_price||0),price:+(v.price||0),stock:+(v.stock_quantity||0),
           minStock:+(p.min_stock_alert||0),
           imageUrl:v.image_url||'',
           fractions:(fracsByVariant[v.id]||[]).filter(f=>f.is_active!==false).map(f=>({
@@ -5387,15 +5314,13 @@ img, video { max-width: 100%; height: auto; }
 
   <div class="flex gap-4 mb-4">
     <div class="flex-shrink-0">
-      <div class="block w-24">
-        <button type="button" id="pm-photo-picker" onclick="document.getElementById('pm-photo-input')?.click()" class="w-24 h-24 rounded-2xl border-2 border-dashed border-slate-300 hover:border-emerald-400 bg-slate-50 hover:bg-emerald-50 cursor-pointer overflow-hidden relative btn-touch transition-colors">
-          <img id="pm-photo-preview" class="hidden w-full h-full object-cover" alt="รูปสินค้า">
-          <div id="pm-photo-placeholder" class="w-full h-full flex flex-col items-center justify-center text-slate-400 text-[10px] font-bold gap-1">
-            <span class="text-2xl">📷</span><span>เลือกรูปสินค้า</span>
-          </div>
-        </button>
-        <input type="file" id="pm-photo-input" accept="image/jpeg,image/png,image/webp,image/gif,image/*" capture="environment" class="absolute w-px h-px opacity-0 pointer-events-none" onchange="window.handleProductPhotoSelect(event)">
-      </div>
+      <label class="block w-24 h-24 rounded-2xl border-2 border-dashed border-slate-300 hover:border-emerald-400 bg-slate-50 hover:bg-emerald-50 cursor-pointer overflow-hidden relative btn-touch transition-colors">
+        <img id="pm-photo-preview" class="hidden w-full h-full object-cover">
+        <div id="pm-photo-placeholder" class="w-full h-full flex flex-col items-center justify-center text-slate-400 text-[10px] font-bold gap-1">
+          <span class="text-2xl">📷</span><span>รูป/ไอคอน</span>
+        </div>
+        <input type="file" id="pm-photo-input" accept="image/*" capture="environment" class="hidden" onchange="window.handleProductPhotoSelect(event)">
+      </label>
       <input id="pm-image" placeholder="หรือพิมพ์ Emoji" class="w-24 mt-1.5 border p-1.5 rounded-lg text-center text-xs outline-none" oninput="window.updateProductEmojiPreview()">
     </div>
     <div class="flex-1 grid grid-cols-1 gap-2 text-xs">
@@ -5677,60 +5602,27 @@ let pmPhotoDataUrl = null;
 let pmPhotoChanged = false;
 
 window.handleProductPhotoSelect = function(e) {
-  const input = e?.target || document.getElementById('pm-photo-input');
-  const file = input?.files?.[0];
+  const file = e.target.files[0];
   if (!file) return;
-
-  if (!String(file.type || '').startsWith('image/')) {
-    if (input) input.value = '';
-    return window.showAlert?.('ไฟล์ไม่ถูกต้อง', 'กรุณาเลือกไฟล์รูปภาพ เช่น JPG, PNG หรือ WEBP', true);
-  }
-  if (file.size > 12 * 1024 * 1024) {
-    if (input) input.value = '';
-    return window.showAlert?.('รูปใหญ่เกินไป', 'กรุณาเลือกรูปขนาดไม่เกิน 12 MB ระบบจะย่อรูปให้อัตโนมัติ', true);
-  }
-
   const reader = new FileReader();
-  reader.onerror = () => {
-    if (input) input.value = '';
-    window.showAlert?.('อ่านรูปไม่สำเร็จ', 'ไม่สามารถอ่านไฟล์รูปนี้ได้ กรุณาลองเลือกรูปใหม่', true);
-  };
   reader.onload = function(evt) {
     const img = new Image();
     img.onload = function() {
-      try {
-        const maxDim = 1000;
-        let width = img.naturalWidth || img.width;
-        let height = img.naturalHeight || img.height;
-        if (!width || !height) throw new Error('ไม่พบขนาดรูปภาพ');
-        if (width > maxDim || height > maxDim) {
-          const scale = maxDim / Math.max(width, height);
-          width = Math.max(1, Math.round(width * scale));
-          height = Math.max(1, Math.round(height * scale));
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width; canvas.height = height;
-        const ctx = canvas.getContext('2d', { alpha: false });
-        if (!ctx) throw new Error('เบราว์เซอร์ไม่รองรับการประมวลผลรูป');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, width, height);
-        ctx.drawImage(img, 0, 0, width, height);
-        pmPhotoDataUrl = canvas.toDataURL('image/jpeg', 0.82);
-        pmPhotoChanged = true;
-        const preview = document.getElementById('pm-photo-preview');
-        const placeholder = document.getElementById('pm-photo-placeholder');
-        if (preview) { preview.src = pmPhotoDataUrl; preview.classList.remove('hidden'); }
-        if (placeholder) placeholder.classList.add('hidden');
-        const emoji = document.getElementById('pm-image');
-        if (emoji) emoji.value = '';
-        window.showToast?.('เลือกรูปสินค้าแล้ว — กด “บันทึกสินค้า” เพื่ออัปโหลด');
-      } catch (err) {
-        console.error('product image prepare failed', err);
-        window.showAlert?.('เตรียมรูปไม่สำเร็จ', err.message || 'กรุณาลองเลือกรูปใหม่', true);
+      const maxDim = 800;
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width * scale); height = Math.round(height * scale);
       }
-    };
-    img.onerror = function() {
-      window.showAlert?.('เปิดรูปไม่สำเร็จ', 'ไฟล์รูปอาจเสียหรือเป็นรูปแบบที่เบราว์เซอร์ไม่รองรับ', true);
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      pmPhotoDataUrl = canvas.toDataURL('image/jpeg', 0.75);
+      pmPhotoChanged = true;
+      document.getElementById('pm-photo-preview').src = pmPhotoDataUrl;
+      document.getElementById('pm-photo-preview').classList.remove('hidden');
+      document.getElementById('pm-photo-placeholder').classList.add('hidden');
+      document.getElementById('pm-image').value = ''; // photo takes priority over emoji
     };
     img.src = evt.target.result;
   };
@@ -6015,24 +5907,13 @@ window.saveProduct = async function() {
         if (c) {
           const blob = await (await fetch(pmPhotoDataUrl)).blob();
           const path = `${pid}_${Date.now()}.jpg`;
-          const storage = c.storage.from('product-images');
-          const { error: upErr } = await storage.upload(path, blob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
-          if (upErr) {
-            console.error('product image upload failed', upErr);
-            throw new Error(`อัปโหลดรูปไป Supabase ไม่สำเร็จ: ${upErr.message || upErr}`);
-          }
-          const { data } = storage.getPublicUrl(path);
-          if (!data?.publicUrl) throw new Error('Supabase ไม่ส่ง URL รูปกลับมา');
-          imageUrl = data.publicUrl;
+          const { error: upErr } = await c.storage.from('product-images').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+          if (!upErr) { const { data } = c.storage.from('product-images').getPublicUrl(path); imageUrl = data.publicUrl; }
+          else { imageUrl = pmPhotoDataUrl; }
         } else {
           imageUrl = pmPhotoDataUrl;
         }
-      } catch (e) {
-        console.error('product photo upload failed', e);
-        // Keep the selected image locally so the product is not silently saved without a photo.
-        imageUrl = pmPhotoDataUrl;
-        window.showAlert?.('อัปโหลดรูปไม่สำเร็จ', e?.message ? e.message + '\n\nรูปยังถูกเก็บไว้ในเครื่องชั่วคราว แต่จะยังไม่สามารถดูจากเครื่องอื่นได้จนกว่า Storage จะใช้งานได้' : 'กรุณาตรวจสอบ Supabase Storage และสิทธิ์การอัปโหลด', true);
-      }
+      } catch (e) { imageUrl = pmPhotoDataUrl; console.warn('product photo upload failed, kept locally', e); }
       imageEmoji = '';
     } else {
       imageUrl = null; // user cleared the photo in favor of an emoji
@@ -6053,19 +5934,49 @@ window.saveProduct = async function() {
   window.populatePOPickers?.();
   window.showToast?.(id ? 'บันทึกการแก้ไขสินค้าสำเร็จ' : `เพิ่มสินค้าสำเร็จ (SKU: ${sku})`);
 
-  // Best-effort background push — reuses the same product/variant/fraction mapping as the
-  // periodic full sync, so there's no separate, possibly-drifting mapping logic to maintain here.
+  // Best-effort product write. The normal product sync remains available for recovery;
+  // transaction writes use their dedicated atomic RPCs.
   window.syncProductsToSupabase?.(true);
 };
 
 window.deleteProduct = async id => {
-  if (!ok('PRODUCT_DELETE') || !confirm('ยืนยันการลบสินค้านี้?')) return;
-  try { const c = sb(); if (c) await c.from('products').delete().eq('id', id); } catch (e) { console.warn(e); }
-  delete db.products[id];
-  window.persist?.();
-  window.renderStockTable();
-  window.renderSaleHome?.();
-  window.populatePOPickers?.();
+  if (!ok('PRODUCT_DELETE') || !confirm('ยืนยันการลบสินค้านี้?\n\nถ้าสินค้านี้มีประวัติการขาย/รับเข้า ระบบจะเก็บเป็นประวัติแทนการลบถาวร')) return;
+  const c = sb();
+  if (!c) {
+    return window.showAlert?.('ยังไม่ได้เชื่อมต่อ Cloud', 'การลบสินค้าต้องเชื่อมต่อ Supabase เพื่อป้องกันการลบประวัติผิดพลาด', true);
+  }
+  try {
+    const remoteId = toUUID(id);
+    const { data, error } = await c.rpc('delete_entity', {
+      p_kind: 'product',
+      p_id: remoteId,
+      p_note: 'ลบจากหน้าจัดการสินค้า'
+    });
+    if (error) throw error;
+
+    const mode = data?.mode || 'deleted';
+    if (mode === 'missing') {
+      delete db.products[id];
+      window.showToast?.('ไม่พบสินค้าใน Cloud — ล้างรายการค้างในเครื่องแล้ว');
+    } else if (mode === 'archived') {
+      const local = db.products[id];
+      if (local) {
+        local.isDeleted = true;
+        (local.variants || []).forEach(v => { v.isActive = false; });
+      }
+      window.showToast?.('สินค้านี้มีประวัติ จึงเก็บเข้าประวัติแทนการลบถาวร');
+    } else {
+      delete db.products[id];
+      window.showToast?.('ลบสินค้าสำเร็จ');
+    }
+    window.persist?.();
+    window.renderStockTable?.();
+    window.renderSaleHome?.();
+    window.populatePOPickers?.();
+  } catch (e) {
+    console.error('deleteProduct failed', e);
+    window.showAlert?.('ลบสินค้าไม่สำเร็จ', e.message || String(e), true);
+  }
 };
 
 // NOTE: the action-column patch that used to live here (bolting a "แก้ไข/ลบ" cell onto each
@@ -6103,22 +6014,36 @@ window.confirmReceivePO=async function(){if(!ok('GOODS_RECEIPT'))return;const su
       }catch(e){receipt.deliveryNoteUrls.push(f.dataUrl);console.warn('delivery note upload error, kept locally',e);}
     }
   }
-  db.purchaseOrders=db.purchaseOrders||[];db.purchaseOrders.push(receipt);for(const x of poTempItems){const p=db.products[x.productId],v=p?.variants?.[0];if(v){v.stock=(+v.stock||0)+(+x.qty||0);v.cost=+x.cost||0;}}db.cashLedger=db.cashLedger||[];const apEntry={id:'AP-'+Date.now(),type:'ACCOUNTS_PAYABLE',supplierId,docRef,amount:poTempItems.reduce((a,x)=>a+x.total,0),terms,status:'OPEN',createdAt:receipt.receivedAt};db.cashLedger.push(apEntry);persist();const itemsForSync=receipt.items;poTempItems.length=0;window.renderPOCartList();window.renderStockTable();window.renderPurchaseHistory();window.clearDeliveryNote?.();window.showToast?.('รับสินค้าเข้าคลังและบันทึกเจ้าหนี้สำเร็จ');document.getElementById('po-doc-ref').value='';
-  // Best-effort authoritative push to Supabase via the proper purchase_orders →
-  // purchase_order_items → receive_purchase_order RPC flow (the schema's real, atomic
-  // receiving path — it locks rows, validates received quantity against ordered quantity, and
-  // writes an inventory_movements audit entry). Runs in the background so the cashier flow
-  // above never blocks on network; local stock/AP are already authoritative either way.
-  // NOTE: receive_purchase_order requires the signed-in Supabase session to belong to an
-  // OWNER or MANAGER app_user (enforced by is_manager() inside the function itself) — this
-  // silently no-ops (logged to console only) if that's not the case, same as every other
-  // background sync in this app.
-  window.syncGoodsReceiptToSupabase?.(receipt, supplierId, docRef, terms, apEntry);
+  // v1.1: when online, make Supabase's atomic receive_purchase_order() the authoritative
+  // write first. Local state is committed only after the cloud transaction succeeds.
+  // Offline mode remains supported as a local fallback and is clearly marked pending.
+  const apEntry={id:'AP-'+Date.now(),type:'ACCOUNTS_PAYABLE',supplierId,docRef,amount:poTempItems.reduce((a,x)=>a+x.total,0),terms,status:'OPEN',createdAt:receipt.receivedAt};
+  const cloudOk = (navigator.onLine !== false) ? await (window.syncGoodsReceiptToSupabase?.(receipt, supplierId, docRef, terms, apEntry) || false) : false;
+  receipt._cloudSynced = !!cloudOk;
+  receipt._pendingCloudSync = !cloudOk;
+
+  db.purchaseOrders=db.purchaseOrders||[];
+  db.purchaseOrders.push(receipt);
+  for(const x of poTempItems){
+    const p=db.products[x.productId],v=p?.variants?.[0];
+    if(v){v.stock=(+v.stock||0)+(+x.qty||0);v.cost=+x.cost||0;}
+  }
+  db.cashLedger=db.cashLedger||[];
+  db.cashLedger.push(apEntry);
+  persist();
+  poTempItems.length=0;
+  window.renderPOCartList();window.renderStockTable();window.renderPurchaseHistory();window.clearDeliveryNote?.();
+  document.getElementById('po-doc-ref').value='';
+  if(cloudOk) window.showToast?.('รับสินค้าเข้าคลังและบันทึกเจ้าหนี้สำเร็จ • Cloud ยืนยันแล้ว');
+  else window.showAlert?.('บันทึกในเครื่องแล้ว', 'Supabase ยังยืนยันรายการรับสินค้าไม่ได้ จึงเก็บรายการไว้ในเครื่องก่อน กรุณาตรวจการเชื่อมต่อและกดซิงค์ภายหลัง', true);
 };
 
 window.syncGoodsReceiptToSupabase=async function(receipt, supplierId, docRef, terms, apEntry){
-  const c=sb(); if(!c)return;
+  const c=sb(); if(!c)return false;
   try{
+    // This function performs the authoritative Cloud transaction only. The caller decides
+    // when to mirror the successful result into Local Cache.
+
     const sup=db.suppliers[supplierId];
     const supUUID=toUUID(supplierId);
     if(sup) await c.from('suppliers').upsert([{id:supUUID,name:sup.name,phone:sup.phone||null,address:sup.address||''}],{onConflict:'id'});
@@ -6150,8 +6075,10 @@ window.syncGoodsReceiptToSupabase=async function(receipt, supplierId, docRef, te
     const receiveItems = itemRows.map(r => ({ purchase_order_item_id: r.id, received_quantity: r.quantity }));
     const { error: recvErr } = await c.rpc('receive_purchase_order', { p_purchase_order_id: poRow.id, p_items: receiveItems });
     if(recvErr) throw recvErr;
+    return true;
   }catch(e){
-    console.warn('goods receipt server sync failed (stock/AP already recorded locally):', e);
+    console.warn('goods receipt server sync failed; caller will keep a pending local fallback:', e);
+    return false;
   }
 };
 
