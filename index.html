@@ -2,7 +2,7 @@
 <html lang="th">
   <head>
     <meta charset="UTF-8">
-    <title>Smart POS Pro V9.60 - Enterprise Edition</title>
+    <title>Smart POS Pro v1.0.0</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -31,7 +31,9 @@
         });
       })();
     </script>
-    <link class="no-print" rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/10398/10398642.png">
+    <link class="no-print" rel="manifest" href="manifest.webmanifest">
+    <link class="no-print" rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <meta name="theme-color" content="#4f46e5">
     <style>
     /* =============================================================
        Hand-written replacement for the Tailwind CDN Play script.
@@ -1405,10 +1407,6 @@ img, video { max-width: 100%; height: auto; }
                   <input type="checkbox" id="set-prevent-negative" class="mt-1 w-4 h-4">
                   <span><b class="text-slate-700">ป้องกันสต็อกติดลบ</b><br><span class="text-xs text-slate-500">ไม่ให้ขายเกินจำนวนคงเหลือ (ทั้งที่เครื่องและบนเซิร์ฟเวอร์) — ถ้ายังไม่ได้กรอกยอดยกมา ให้ปิดไว้ก่อน ไม่งั้นขายสินค้าที่สต็อก 0 ไม่ได้</span></span>
                 </label>
-                <label class="flex items-start gap-2 text-sm bg-indigo-50 border border-indigo-200 rounded-xl p-3 cursor-pointer">
-                  <input type="checkbox" id="set-per-employee-auth" class="mt-1 w-4 h-4">
-                  <span><b class="text-slate-700">ใช้บัญชีรายพนักงานบนเซิร์ฟเวอร์</b><br><span class="text-xs text-slate-500">ใส่ PIN แล้วเครื่องจะล็อกอิน Supabase ในนามพนักงานคนนั้น (สิทธิ์/บิล/ประวัติแยกรายคน) — ต้อง deploy Edge Function <code>pin-login</code> และรัน migration 0003 ก่อน ดู README</span></span>
-                </label>
                 <button onclick="window.saveStoreSettings()" class="py-3 px-6 bg-indigo-600 text-white font-bold rounded-xl btn-touch">บันทึกข้อมูลร้านค้า</button>
               </div>
             </div>
@@ -1718,25 +1716,12 @@ img, video { max-width: 100%; height: auto; }
     <!-- Supabase JS Client -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4"></script>
 
-    <script type="text/x-pos-app">
+    <script>
       // ==========================================
       // MASTER APPLICATION LOGIC & STATE
       // ==========================================
-      // BUG FIX (money-rounding, application-wide): every monetary calculation in this file
-      // (cart subtotal/discount/tax/grand total, change, refunds, reports, cloud sync — 49
-      // call sites) already funnels through this one function as its final rounding step, so
-      // fixing the rounding math itself closes the whole floating-point-rounding defect class
-      // at once, without migrating every stored/calculated value to a different unit (integer
-      // cents) — a much larger, riskier change touching the SQL schema and every sync path too.
-      // The OLD `Math.round(num*100)/100` has a textbook float-precision bug: the intermediate
-      // multiplication can itself already be wrong in binary floating point — e.g. in real
-      // JS, `1.005*100 === 100.49999999999999`, not 100.5 — so Math.round then silently rounds
-      // the wrong way for specific values (1.005 rounded to 1.00 instead of 1.01). Shifting the
-      // decimal point via a string exponent (`+'e2'` / `+'e-2'`) instead routes through JS's own
-      // exact decimal-string-to-number parsing rather than a binary multiply, which avoids that
-      // intermediate error entirely — this is the standard, well-established fix for this exact
-      // class of bug. Verified against known problem values (1.005, 1.015, 1.025, 0.145, etc.)
-      // before applying.
+      // ปัดเศษเงินทศนิยม 2 ตำแหน่งด้วยการเลื่อนจุดทศนิยมผ่าน string exponent ('e2') แทนการคูณ 100
+      // เพื่อเลี่ยงความคลาดเคลื่อนของ float (เช่น 1.005*100 = 100.49999999999999)
       const roundAmt = (num) => {
         const n = parseFloat(num) || 0;
         return Number(Math.round(Number(n + 'e2')) + 'e-2');
@@ -1777,14 +1762,8 @@ window.formatMoney = formatMoney;
         return h >>> 0;
       }
 
-      // BUG FIX: เวอร์ชันเดิมปั้น UUID 128 บิตจาก hash 32 บิตตัวเดียวแล้ว XOR กับค่าคงที่ 3 ค่า
-      // — เอนโทรปีจริงมีแค่ 32 บิต ไม่ใช่ 128 บิต ทำให้โอกาสสองรหัสในเครื่อง (สินค้า/บิล/ลูกค้า ฯลฯ)
-      // แปลงแล้วชนกันเริ่มมีนัยสำคัญตั้งแต่ประมาณ 65,000 รายการ (birthday paradox) และ upsert
-      // ฝั่ง Supabase จะ "เขียนทับ" เรคคอร์ดที่ชนกันแบบเงียบๆ โดยไม่มี error ให้เห็นเลย
-      // เวอร์ชันนี้รัน FNV-1a 4 รอบด้วย seed และ salt ต่างกันในแต่ละรอบ ให้ได้เอนโทรปีอิสระ
-      // ครบทั้ง 128 บิตจริง โดยยังคง sync และ deterministic เหมือนเดิม (string เดิมแปลงแล้วได้
-      // uuid เดิมเสมอ ซึ่งจำเป็นสำหรับ upsert ให้ตรงแถวเดิมทุกครั้งที่ sync ซ้ำ) — ไม่ต้องแก้จุดที่
-      // เรียกใช้ toUUID() เลยสักจุดเดียว
+      // toUUID: แปลง id ในเครื่องเป็น UUID แบบ deterministic (FNV-1a 4 รอบ ได้เอนโทรปี 128 บิต)
+      // string เดิมให้ UUID เดิมเสมอ จึง upsert ตรงแถวเดิมทุกครั้งที่ซิงค์ซ้ำ
       function toUUID(str) {
         if (!str) return null;
         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1797,8 +1776,7 @@ window.formatMoney = formatMoney;
         return `${c.slice(0,8)}-${c.slice(8,12)}-4${c.slice(13,16)}-8${c.slice(17,20)}-${c.slice(20,32)}`;
       }
 
-      // PERF FIX (#8): เดิมพิมพ์ค้นหาในตารางสต็อกทีเดียวก็ re-render ทั้งตารางทันที ถ้าสินค้าเยอะ
-      // (หลักพันรายการ) จะกระตุกทุกตัวอักษรที่พิมพ์ — หน่วงไว้ 200ms ให้พิมพ์เสร็จก่อนค่อย render
+      // หน่วงการค้นหาในตารางสต็อก 200ms กัน re-render ทุกตัวอักษรที่พิมพ์
       window.debouncedRenderStockTable = (function(){
         let t = null;
         return function(){
@@ -1921,18 +1899,14 @@ window.formatMoney = formatMoney;
               if (!upErr) {
                 const { data } = client.storage.from('product-images').getPublicUrl(path);
                 publicUrl = data.publicUrl;
-              }
+              } else { window._bulkImgFail = (window._bulkImgFail || 0) + 1; window._bulkImgLastErr = upErr.message; }
             } catch (e) {}
           }
 
           if (publicUrl) {
             p.imageUrl = publicUrl;
           } else {
-            // BUG FIX: เดิม fallback เป็น URL.createObjectURL(file) ซึ่งเป็น blob: URL ที่ใช้ได้
-            // แค่ในแท็บ/เซสชันปัจจุบันเท่านั้น — พอ persist() ลง localStorage แล้วรีเฟรชหน้าเว็บ
-            // URL นี้จะใช้ไม่ได้ทันที รูปหายทุกครั้ง (ไม่สอดคล้องกับจุดถ่ายรูปสินค้าทีละชิ้นที่ใช้
-            // base64 data URL เป็น fallback แทน ซึ่งอยู่ข้ามการรีเฟรชได้ปกติ) เปลี่ยนมาใช้
-            // FileReader.readAsDataURL() แบบเดียวกันให้สอดคล้องกัน รูปจะไม่หายหลัง reload อีกต่อไป
+            // อ่านรูปเป็น data URL (blob: URL ใช้ข้ามการรีเฟรชหน้าไม่ได้)
             p.imageUrl = await new Promise((resolve) => {
               const reader = new FileReader();
               reader.onload = () => resolve(reader.result);
@@ -1949,7 +1923,8 @@ window.formatMoney = formatMoney;
         window.closeModal('modal-bulk-image');
         window.renderStockTable();
         window.renderSaleHome?.();
-        window.showAlert("นำเข้ารูปภาพเรียบร้อย", `จับคู่และอัปโหลดรูปภาพสำเร็จ ${successCount} รายการ จากทั้งหมด ${entries.length} รายการ`, false);
+        window.showAlert("นำเข้ารูปภาพเรียบร้อย", `จับคู่และอัปโหลดรูปภาพสำเร็จ ${successCount} รายการ จากทั้งหมด ${entries.length} รายการ` + (window._bulkImgFail ? `\n\n⚠️ ${window._bulkImgFail} รูปอัปโหลดขึ้นคลาวด์ไม่สำเร็จ (${window._bulkImgLastErr}) — เก็บไว้ในเครื่องก่อน กดซิงค์เพื่อส่งใหม่` : ''), !!window._bulkImgFail);
+        window._bulkImgFail = 0;
       };
 
       // ==========================================
@@ -2055,12 +2030,8 @@ window.formatMoney = formatMoney;
         window.showToast("ลบหมวดหมู่สำเร็จ");
       };
 
-      // Employee management now lives inline in the Settings > USERS tab (see switchSettingsTab)
-      // instead of a separate floating modal, matching the other management panels.
-      // NOTE: window.renderUserManagerList / window.saveUser / window.deleteUser are defined
-      // later in the "Enterprise Management Repair Layer" script (with role support and
-      // hashed PINs via window.hashPin) — that is the active implementation actually used
-      // by the Settings > USERS tab.
+      // การจัดการพนักงานอยู่ในแท็บ ตั้งค่า > พนักงาน (switchSettingsTab) ส่วน renderUserManagerList /
+      // saveUser / deleteUser นิยามไว้ในสคริปต์ "Enterprise Management" ท้ายไฟล์
 
       window.saveSupplier = function() {
         const name = document.getElementById('supplier-name-input').value.trim();
@@ -2102,7 +2073,7 @@ window.formatMoney = formatMoney;
         const key = window.getConfiguredSupabaseAnonKey();
         if (!url || !key) return null;
         if (typeof window.supabase !== 'undefined' && window.supabase.createClient) {
-          _supabaseClient = window.supabase.createClient(url, key, { auth: { storage: window.posStore.authStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
+          _supabaseClient = window.supabase.createClient(url, key);
         }
         return _supabaseClient;
       };
@@ -2136,15 +2107,9 @@ window.formatMoney = formatMoney;
       // ==========================================
       // STORE-LEVEL SUPABASE AUTH (Tier 1 of the login design)
       // ==========================================
-      // The anon key alone only grants Postgres the `anon` role. Every RLS policy in the
-      // schema is `TO authenticated`, so without an actual signed-in session, every read/write
-      // to Supabase is silently rejected — this is what makes signing in mandatory, not optional.
-      // Cashiers still just use a 4-digit PIN (see the employee login screen below); only the
-      // store owner needs this real email/password account, and only once per device (the
-      // Supabase JS client persists the session in localStorage and auto-refreshes it).
-      // เพิ่มขึ้นมา: เดิมมีแค่ storeSignIn (signInWithPassword) ซึ่งใช้ได้เฉพาะกับบัญชีที่มีอยู่แล้ว
-      // เท่านั้น — ร้านที่เพิ่งเริ่มใช้แอปนี้ครั้งแรกไม่มีทางสร้างบัญชีแรกได้เลยจากในแอป (ต้องไปสร้าง
-      // เองใน Supabase Dashboard ซึ่งไม่มีเอกสารบอกไว้ที่ไหนเลย) ฟังก์ชันนี้ปิดช่องโหว่นั้น
+      // ทุกนโยบาย RLS เป็น `TO authenticated` — ต้องมีเซสชันล็อกอินจริงจึงอ่าน/เขียน Supabase ได้
+      // แคชเชียร์ใช้ PIN 4 หลัก มีเฉพาะเจ้าของร้านที่ล็อกอินอีเมล/รหัสผ่าน (ครั้งเดียวต่อเครื่อง)
+      // storeSignUp ใช้สร้างบัญชีแรกของร้านจากในแอป
       window.storeSignUp = async function() {
         const client = window.getSupabaseClient();
         if (!client) return window.showAlert("ยังไม่ได้ตั้งค่า", "กรุณากรอก Project URL และ anon key แล้วบันทึกก่อน", true);
@@ -2298,9 +2263,23 @@ window.formatMoney = formatMoney;
       window._syncProductsImpl = async function(isQuiet = false) {
         const client = window.getSupabaseClient();
         if (!client) return false;
-          if (!window.serverIsManager()) return true;   // แคตตาล็อก/ลูกค้า/พนักงาน: ผู้จัดการขึ้นไปเท่านั้นที่ซิงค์ขึ้นได้ (RLS บังคับอยู่แล้ว)
 
         try {
+          // 0. ตรวจสิทธิ์ก่อน (RPC my_role ใน supabase/schema.sql) — ถ้า RPC ยังไม่มีให้ข้าม แล้วไปพึ่ง error ของแต่ละขั้นตอนแทน
+          if (!window._roleOkUntil || Date.now() > window._roleOkUntil) {
+            const { data: myRole, error: roleErr } = await client.rpc('my_role');
+            if (!roleErr) {
+              if (myRole === 'OWNER' || myRole === 'MANAGER') window._roleOkUntil = Date.now() + 60000;
+              else {
+                const msg = myRole
+                  ? `บัญชีที่ล็อกอินมีสิทธิ์ "${myRole}" ซึ่งเขียนข้อมูลสินค้าไม่ได้ — ต้องเป็น OWNER หรือ MANAGER`
+                  : 'บัญชีที่ล็อกอินยังไม่ได้ผูกกับ app_users (หรือยังไม่ได้ล็อกอินร้านค้า) — ล็อกอินร้านด้วยอีเมลเจ้าของ แล้วตั้งค่าเจ้าของร้าน หรือผูกบัญชีตามคู่มือใน README ข้อ “ผูกบัญชีเจ้าของร้าน”';
+                window._lastProductSyncError = msg;
+                if (!isQuiet) window.showAlert('ซิงค์สินค้าไม่ได้: สิทธิ์ไม่พอ', msg, true);
+                return false;
+              }
+            }
+          }
           // 1. Categories
           const categoryRows = (db.categories || []).map((c, idx) => ({
             id: toUUID(c.id),
@@ -2314,9 +2293,7 @@ window.formatMoney = formatMoney;
             if (catErr) throw catErr;
           }
 
-          // 2. Products — schema note: price/cost/stock no longer live on `products` at all
-          // (moved entirely onto product_variants below). `products` only holds catalog-level
-          // fields shared across every size/variant of the item.
+          // 2. Products — เก็บเฉพาะข้อมูลระดับแคตตาล็อก (ราคา/ทุน/สต็อกอยู่ที่ product_variants)
           const productsList = Object.values(db.products || {});
           // ตาราง products ฝั่ง Supabase มี "sku unique" กันไว้ — ถ้าสินค้าในเครื่องนี้ดันมีรหัส
           // ซ้ำกันอยู่ (เช่น นำเข้าไฟล์เก่าตั้งแต่ก่อนมีการกันซ้ำตอนนำเข้า) การ upsert ทั้งก้อนจะโดน
@@ -2343,11 +2320,24 @@ window.formatMoney = formatMoney;
             window.persist?.();
             console.warn('syncProductsToSupabase: renamed duplicate SKUs before sync', renamedSkus);
           }
+          // รูปที่ยังเป็น data:/blob: (อัปโหลดไม่สำเร็จตอนบันทึก) → ลองอัปขึ้น Storage ตอนนี้ ถ้าไม่ได้ก็ไม่ส่งขึ้นตาราง
+          for (const p of productsList) {
+            if (p.imageUrl && /^(data:|blob:)/.test(p.imageUrl)) {
+              try {
+                const blob = await (await fetch(p.imageUrl)).blob();
+                const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+                const path = `${toUUID(p.id)}_${Date.now()}.${ext}`;
+                const { error: upErr } = await client.storage.from('product-images').upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
+                if (!upErr) { p.imageUrl = client.storage.from('product-images').getPublicUrl(path).data.publicUrl; window.persist?.(); }
+                else console.warn('re-upload product image failed', p.name, upErr.message);
+              } catch (e) { console.warn('re-upload product image error', p.name, e); }
+            }
+          }
           const productRows = productsList.map(p => ({
             id: toUUID(p.id),
             sku: p.code || p.id,
             name: p.name,
-            image_url: p.imageUrl || null,
+            image_url: (p.imageUrl && /^https?:/.test(p.imageUrl)) ? p.imageUrl : null,
             min_stock_alert: roundStock((p.variants && p.variants[0] && p.variants[0].minStock) || 5),
             is_active: !p.isDeleted
           }));
@@ -2375,8 +2365,7 @@ window.formatMoney = formatMoney;
             if (linkErr) throw linkErr;
           }
 
-          // 4. Product Variants — price/cost_price are direct columns here (no more
-          // override-with-fallback-to-parent semantics from the old schema).
+          // 4. Product Variants — price/cost_price เป็นคอลัมน์ตรงของแต่ละ variant
           const variantRows = [];
           const _vSeen = new Set();   // sku ของ variant ต้องไม่ซ้ำ (unique index) — ซ้ำให้เป็น null แทนที่จะทำให้ซิงค์ทั้งชุดล้ม
           const _vsku = (v) => { const k = v.sku ? String(v.sku).trim() : ''; if (!k || _vSeen.has(k)) return null; _vSeen.add(k); return k; };
@@ -2390,8 +2379,8 @@ window.formatMoney = formatMoney;
                 sku: _vsku(v),
                 price: roundAmt(v.price),
                 cost_price: roundAmt(v.cost),
-                // (v10) ไม่ส่ง stock_quantity ในการ upsert อีกแล้ว — เดิมเครื่องไหนซิงค์ทีหลังจะเขียนทับสต็อกของเครื่องอื่น
-                // สต็อกเปลี่ยนผ่าน RPC เท่านั้น (create_sale / process_return / receive_goods / adjust_stock / seed)
+                // ไม่ส่ง stock_quantity ใน upsert — สต็อกเปลี่ยนผ่าน RPC เท่านั้น
+                // (create_sale / process_return / receive_goods / adjust_stock / seed)
                 is_active: !p.isDeleted
               });
             });
@@ -2402,13 +2391,8 @@ window.formatMoney = formatMoney;
             await window._seedStock(client, productsList);   // ส่งสต็อกตั้งต้นครั้งเดียวต่อสินค้า (ไม่ทับค่าที่เซิร์ฟเวอร์รู้อยู่แล้ว)
           }
 
-          // 5. Product Fractions — keyed off variant_id (not product_id), and the ratio column
-          // is named quantity_ratio: "how many fraction units make up 1 whole stock unit" — e.g.
-          // a fraction sold by the metre out of a 100m roll has quantity_ratio = 100, matching
-          // this schema's create_sale RPC which divides quantity sold by this ratio to find how
-          // much to deduct from stock_quantity. This is the INVERSE of the old schema's
-          // fractionMultiplier (which was "how much of 1 stock unit does 1 fraction unit use"),
-          // so it's converted here rather than passed through directly.
+          // 5. Product Fractions — อ้างอิง variant_id; quantity_ratio = จำนวนหน่วยแบ่งขายต่อสต็อก 1 หน่วยเต็ม
+          // (เช่น ขายเป็นเมตรจากม้วน 100 ม. = 100) จึงแปลงจาก fractionMultiplier ซึ่งเป็นค่าผกผันก่อนส่ง
           const fractionRows = [];
           productsList.forEach(p => {
             (p.variants || []).forEach(v => {
@@ -2460,11 +2444,8 @@ window.formatMoney = formatMoney;
             if (supErr) throw supErr;
           }
 
-          // 8. app_users — replaces the old separate profiles/employees split. auth_user_id is
-          // deliberately left NULL for PIN-only staff (nullable by design in this schema) —
-          // only the store owner's row needs a real auth_user_id, set once via
-          // window.bootstrapFirstOwner. Only the SHA-256 hash is ever written to `pin`, never
-          // the raw digits.
+          // 8. app_users — auth_user_id เป็น NULL สำหรับพนักงานที่ใช้ PIN อย่างเดียว มีเฉพาะแถวเจ้าของร้าน
+          // (ตั้งผ่าน window.bootstrapFirstOwner) ส่งขึ้นเฉพาะ hash ของ PIN ไม่ส่งตัวเลขจริง
           const userRows = (db.users || [])
             .filter(u => u.pinHash)
             .map(u => ({
@@ -2488,7 +2469,11 @@ window.formatMoney = formatMoney;
           return true;
         } catch (err) {
           console.error("Products SQL sync error:", err);
-          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์สินค้า", err.message, true);
+          const _rls = err && (err.code === '42501' || /row-level security|permission denied/i.test(err.message || ''));
+          window._lastProductSyncError = _rls
+            ? 'ถูกบล็อกด้วยสิทธิ์ (RLS): บัญชีที่ล็อกอินอยู่ยังไม่ได้เป็น OWNER/MANAGER ใน app_users — ล็อกอินร้านด้วยอีเมลเจ้าของ แล้วตั้งค่าเจ้าของร้าน (ถ้ามี OWNER เดิมผูกกับบัญชีอื่น ให้ผูกบัญชีตามคู่มือใน README ข้อ “ผูกบัญชีเจ้าของร้าน”) | ' + (err.message || '')
+            : (err && err.message) || String(err);
+          if (!isQuiet) window.showAlert("ข้อผิดพลาดในการซิงค์สินค้า", window._lastProductSyncError, true);
           return false;
         }
       };
@@ -2519,10 +2504,9 @@ window.formatMoney = formatMoney;
             const { error: shiftErr } = await client.from('shifts').upsert(shiftRows, { onConflict: 'id' });
             if (shiftErr) throw shiftErr;
           }
-          if (!window.serverIsManager()) { window.updateSupabaseBadge?.(true); return true; }   // แคชเชียร์ส่งได้แค่กะ — ที่เหลือเป็นงานผู้จัดการ
 
-          // 2. Bills — (v10) ไม่เขียนบิลตรงเข้าตารางอีกต่อไป: บิลทั้งหมดไปทาง create_sale (คิวซิงค์) เท่านั้น
-          //    เพื่อให้เซิร์ฟเวอร์ตรวจสต็อก/วงเงิน/ส่วนลดเสมอ ไม่มี fallback ที่ข้ามกฎได้
+          // 2. Bills — ไม่เขียนบิลตรงเข้าตาราง: ทุกบิลไปทาง create_sale (คิวซิงค์)
+          //    เพื่อให้เซิร์ฟเวอร์ตรวจสต็อก/วงเงิน/ส่วนลดเสมอ
 
           // 3. Cash Ledger — real cash-drawer movements only (AR payments received, cash
           // refunds, and manual cash-in/cash-out recorded during a shift). id is synthesized
@@ -2608,19 +2592,15 @@ window.formatMoney = formatMoney;
         if (overlay) overlay.classList.remove('hidden');
 
         try {
-          // BUG FIX: เดิมไม่เช็คค่าที่ return กลับมาเลย ต่อให้ syncProductsToSupabase/
-          // syncTransactionsToSupabase ล้มเหลวจริง (เช่นโดน RLS บล็อกเพราะยังไม่ได้ล็อกอิน) ก็ยัง
-          // ขึ้นโทสต์ "ซิงค์สำเร็จ" หลอกอยู่ดี ทำให้ไม่มีทางรู้เลยว่าทำไมตารางบน Supabase ว่างเปล่า
-          // เรียกซ้ำแบบไม่ quiet (isQuiet=false) เฉพาะตัวที่ล้มเหลว เพื่อให้ error จริงเด้งให้เห็น
+          // ตรวจผลลัพธ์ทุกขั้นตอน: ถ้าขั้นไหนล้มเหลวจะเรียกซ้ำแบบไม่ quiet เพื่อแสดง error จริง
           const _ver = await window.checkServerSchema();
-          if (_ver !== null && _ver < 2) throw new Error('ฐานข้อมูลบนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — ต้องรัน supabase/migrations/0002_fixes.sql ก่อน');
-          if (window.isPerEmployeeAuth() && !window._serverUser) await window.resolveServerUser();
+          if (_ver !== null && _ver < 2) throw new Error('ฐานข้อมูลบนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — ต้องรัน supabase/schema.sql ก่อน');
           window.retryFailedSyncOps();   // กดซิงค์เองถือว่าสั่งลองส่งรายการที่เคยล้มเหลวใหม่
           const res1 = await window.syncProductsToSupabase(true);
           const res2 = await window.syncTransactionsToSupabase(true);
           const qres = await window.flushSyncQueue(true);
 
-          if (!res1) { await window.syncProductsToSupabase(false); throw new Error('ซิงค์สินค้า/หมวดหมู่/ลูกค้าไม่สำเร็จ'); }
+          if (!res1) { await window.syncProductsToSupabase(false); throw new Error('ซิงค์สินค้า/หมวดหมู่/ลูกค้าไม่สำเร็จ: ' + (window._lastProductSyncError || 'ดู Console')); }
           if (!res2) { await window.syncTransactionsToSupabase(false); throw new Error('ซิงค์บิล/กะ/รายรับ-จ่ายไม่สำเร็จ'); }
 
           if (qres && qres.failed > 0) {
@@ -2706,9 +2686,6 @@ window.formatMoney = formatMoney;
 
       // ==========================================
       // PRODUCT SELECTION (Category browse / Search)
-      // Previously window.selectCategory / exitCategory / onSearchInput were referenced
-      // by the UI but never defined anywhere, so every category and search click on the
-      // sale page silently did nothing. Implemented below.
       // ==========================================
       // Group image helper — shared by the main card and the variant-picker modal so both show
       // the same "product photo" (a multi-size/multi-color item still only has one master photo).
@@ -2879,10 +2856,7 @@ window.formatMoney = formatMoney;
       window.changeProductGridCols = function(val) {
         const cols = Math.max(1, parseInt(val) || 4);
         const grid = document.getElementById('product-grid');
-        // BUG FIX: เดิม Math.min(cols, 2) ล็อกจำนวนคอลัมน์พื้นฐาน (มือถือ/จอแคบกว่า md=768px)
-        // ไว้ที่ 2 เสมอ ไม่ว่าจะเลือกกี่คอลัมน์ก็ตาม ทำให้บนมือถือ/แท็บเล็ตจอแคบกดเลือก
-        // "6 คอลัมน์" แล้วไม่มีอะไรเกิดขึ้นเลย เพราะ class md:grid-cols-6 ยังไม่ทำงานที่ความกว้าง
-        // นั้น — ผู้ใช้เลือกเองแล้วต้องเห็นผลทันทีทุกขนาดจอ ไม่ควรมี breakpoint มาทับ
+        // จำนวนคอลัมน์ที่ผู้ใช้เลือกมีผลทันทีทุกขนาดจอ (ไม่มี breakpoint มาทับ)
         if (grid) grid.className = `grid gap-3 grid-cols-${cols}`;
         try { localStorage.setItem('pos_products_grid_cols', cols); } catch (e) {}
       };
@@ -3181,9 +3155,6 @@ window.formatMoney = formatMoney;
 
       // Clears everything tied to the current sale (cart, discount, cash-received, payment
       // method, chosen customer) so nothing "leftover" carries into the next transaction.
-      // Previously only `cart` itself was reset after checkout — the discount amount and the
-      // cash-received figure stayed in their input fields, so the next sale could silently
-      // start with a stale discount applied or show an incorrect change amount.
       window.resetCartState = function() {
         cart = [];
         window.cart = cart;
@@ -3201,9 +3172,7 @@ window.formatMoney = formatMoney;
         window.updateCartUI();
       };
 
-      // BUG FIX: called from loadDatabaseState() via optional chaining but never defined —
-      // silently no-op'd, so the cart's customer dropdown never reflected customers freshly
-      // pulled from Supabase until the cart happened to be reopened (which repopulates it itself).
+      // ใช้ใน loadDatabaseState(): รีเฟรชรายชื่อลูกค้าใน dropdown ของตะกร้าหลังดึงข้อมูลจากคลาวด์
       window.populateCustomerSelect = function() {
         const custSelect = document.getElementById('pay-customer-select');
         if (custSelect) {
@@ -3302,12 +3271,7 @@ window.formatMoney = formatMoney;
           return alert("กรณีค้างชำระ จำเป็นต้องเลือกชื่อลูกค้าก่อนบันทึก");
         }
 
-        // Credit-limit check — this schema's create_sale RPC does not enforce credit_limit
-        // itself (it only carries the column), so this client-side check is the only
-        // enforcement there is; per the manual's "ตรวจสอบวงเงินเครดิต" description, previously
-        // this wasn't enforced client-side at all either, so bills could exceed a customer's
-        // credit_limit before the background sync
-        // ever reached Supabase).
+        // ตรวจวงเงินเครดิตฝั่งแอป — create_sale ฝั่งเซิร์ฟเวอร์ไม่บังคับ credit_limit
         if (activePayMethod === 'CREDIT' && db.customers[cid]) {
           const limit = db.customers[cid].creditLimit ?? 50000;
           if (roundAmt(db.customers[cid].debt + total) > limit) {
@@ -3345,9 +3309,7 @@ window.formatMoney = formatMoney;
           customerId: cid,
           cashierId: db.activeUser?.id || null,
           cashierName: db.activeUser?.name || null,
-          // BUG FIX: เดิมบิลไม่เก็บว่าขายตอนกะไหน ทำให้โค้ด sync ต้องเดาโดยอ่าน db.currentShift
-          // ณ เวลาที่ sync รัน (ซึ่งอาจเป็นกะใหม่ไปแล้ว หรือร้านปิดไปแล้วก็ได้ null) เก็บตรงนี้
-          // ทันทีตอนขาย ให้เป็น source of truth เดียวสำหรับทุกจุดที่ sync ขึ้น Supabase
+          // เก็บกะที่ขายไว้กับบิลทันที เป็น source of truth เดียวตอนซิงค์
           shiftId: db.currentShift?.id || null
         };
 
@@ -3383,7 +3345,7 @@ window.formatMoney = formatMoney;
         window.enqueueSync({ type: 'sale', payload: { billId: bill.id } });
       };
 
-      // (v10) การส่งบิลขึ้นเซิร์ฟเวอร์ย้ายไปที่คิวซิงค์ — ดู window.enqueueSync / runSale ในโมดูล v10 ท้ายไฟล์
+      // การส่งบิลขึ้นเซิร์ฟเวอร์ทำผ่านคิวซิงค์ — ดู window.enqueueSync / runSale
       window.syncBillToSupabaseRPC = function(bill) { window.enqueueSync({ type: 'sale', payload: { billId: bill.id } }); };
 
       // ============================================================
@@ -3649,7 +3611,7 @@ window.formatMoney = formatMoney;
           const groupBadge = (p.variants || []).length > 1
             ? `<span class="block text-[9px] text-indigo-500 font-bold mt-0.5">🔗 กลุ่ม ${p.variants.length} ขนาด</span>` : '';
 
-          // เพิ่มขึ้นมา: ตารางเดิมไม่มีคอลัมน์กำไร/มูลค่าสต็อกเลย ทำให้ต้องเปิดดูทีละตัวเอง
+          // คอลัมน์กำไรและมูลค่าสต็อก
           const cost = +v.cost || 0, price = +v.price || 0, stockQty = +v.stock || 0;
           const profit = roundAmt(price - cost);
           const marginPct = cost > 0 ? Math.round((profit / cost) * 100) : (price > 0 ? 100 : 0);
@@ -3831,11 +3793,7 @@ window.formatMoney = formatMoney;
         if (ids.length < 2) return false;
         const target = db.products[ids[0]];
         if (!target) return false;
-        // BUG FIX: merging used to just `delete db.products[srcId]` locally with no
-        // corresponding delete on Supabase — the merged-away product rows (and their
-        // product_variants/product_categories junction rows) were left orphaned in the
-        // cloud database forever, since upsert() never removes rows that stop appearing
-        // locally. Now mirrors the same best-effort cloud delete window.deleteProduct() uses.
+        // ลบสินค้าที่ถูกรวมออกบนคลาวด์ด้วย (best-effort เหมือน window.deleteProduct) ไม่ให้ค้างเป็นแถวกำพร้า
         const mergedAwayIds = [];
         ids.slice(1).forEach(srcId => {
           const src = db.products[srcId];
@@ -4023,12 +3981,7 @@ window.formatMoney = formatMoney;
       // ==========================================
       // GOODS RECEIPT & MASTER SETTINGS
       // ==========================================
-      // BUG FIX / UX: this used to be a plain <select> listing every product as a flat
-      // alphabetical dropdown — fine for a handful of items, unusable once the catalog grows,
-      // since finding one SKU meant scrolling through the entire list. Replaced with a
-      // type-to-search picker (matches name / SKU / barcode) that shows the product photo and
-      // current stock right in the results, so the right item can be found in a couple of
-      // keystrokes even without knowing exactly which category it's filed under.
+      // ตัวเลือกสินค้าแบบพิมพ์ค้นหา (ชื่อ / SKU / บาร์โค้ด) แสดงรูปและสต็อกคงเหลือในผลลัพธ์
       window.onPOProductChange = function() {
         const pid = document.getElementById('po-product-picker-value').value;
         const p = db.products[pid];
@@ -4228,11 +4181,6 @@ window.formatMoney = formatMoney;
 
       // Populates the supplier dropdown and clears/resets the product search picker so it's
       // ready to search fresh (e.g. after the product catalog changes elsewhere).
-      // BUG FIX: this function was called from three places (showView, saveSupplier,
-      // saveProduct/deleteProduct) via `window.populatePOPickers?.()` and `window.renderPOPicker?.()`
-      // but neither was ever actually defined anywhere — the supplier select was silently,
-      // permanently empty, so a supplier could never be chosen and the whole "receive goods"
-      // feature was unusable no matter what confirmReceivePO() did.
       window.populatePOPickers = function() {
         const supSel = document.getElementById('po-supplier-select');
         if (supSel) {
@@ -4250,15 +4198,8 @@ window.formatMoney = formatMoney;
         const resultsEl = document.getElementById('po-product-picker-results');
         if (resultsEl) resultsEl.classList.add('hidden');
       };
-      // Alias: showView() calls this name specifically when opening the po-receive view.
+      // ใช้ตอนเปิดหน้ารับสินค้า (po-receive)
       window.renderPOPicker = window.populatePOPickers;
-
-      window.confirmReceivePO = function() {
-        // Superseded by the atomic version in the Enterprise Management Repair Layer
-        // (creates the purchase-order record, sets accounts payable, and syncs stock/cost
-        // to Supabase). Kept only as a safety no-op in case that layer fails to load.
-        return window.showAlert ? window.showAlert("เกิดข้อผิดพลาด", "ไม่สามารถโหลดระบบรับสินค้าได้ กรุณารีเฟรชหน้าเว็บ", true) : alert("กรุณารีเฟรชหน้าเว็บ");
-      };
 
       window.openMasterSettingsModal = function(tabKey) {
         document.getElementById('set-store-name').value = db.storeName;
@@ -4266,7 +4207,6 @@ window.formatMoney = formatMoney;
         document.getElementById('set-promptpay').value = db.promptPayId;
         document.getElementById('set-tax-id').value = db.taxId || '';
         const _pn = document.getElementById('set-prevent-negative'); if (_pn) _pn.checked = !!(db.settings && db.settings.preventNegativeStock);
-        const _pe = document.getElementById('set-per-employee-auth'); if (_pe) _pe.checked = !!(db.settings && db.settings.perEmployeeAuth);
         document.getElementById('set-supabase-url').value = window.getConfiguredSupabaseUrl();
         document.getElementById('set-supabase-key').value = window.getConfiguredSupabaseAnonKey();
 
@@ -4301,7 +4241,6 @@ window.formatMoney = formatMoney;
         db.taxId = document.getElementById('set-tax-id').value.trim();
         db.settings = db.settings || {};
         db.settings.preventNegativeStock = !!document.getElementById('set-prevent-negative')?.checked;
-        db.settings.perEmployeeAuth = !!document.getElementById('set-per-employee-auth')?.checked;
         document.getElementById('store-name-title').innerText = db.storeName;
         window.persist?.();
         window.showToast?.("บันทึกข้อมูลร้านค้าเรียบร้อยแล้ว");
@@ -4606,9 +4545,7 @@ window.formatMoney = formatMoney;
           billsEl.innerHTML = bills.length ? bills.map(b => {
             const cName = (b.customerId && b.customerId !== 'GENERAL' && db.customers[b.customerId]) ? db.customers[b.customerId].name : 'ลูกค้าทั่วไป';
             const canReturn = !b.isRefunded;
-            // Show how much (if anything) has been returned against this bill so far — the old
-            // version only showed a boolean "fully returned" badge and said nothing about a
-            // partial return, which looked identical to a bill nobody had touched.
+            // แสดงยอดที่คืนไปแล้ว (คืนบางส่วนก็เห็น)
             const returnedSoFar = (db.returns || []).filter(r => r.billId === b.id).reduce((s, r) => s + r.amount, 0);
             let statusBadge = '';
             if (b.isRefunded) statusBadge = '<span class="text-rose-500 font-bold">คืนสินค้าครบแล้ว</span>';
@@ -4630,8 +4567,6 @@ window.formatMoney = formatMoney;
           }).join('') : `<p class="text-center text-slate-400 font-bold py-6">ไม่พบประวัติการขาย</p>`;
         }
       };
-      // Backward-compatible alias: some code paths (bridge script / loadDatabaseState) still call renderHistory().
-      window.renderHistory = window.renderSalesAR;
 
       // --- Receive customer payment against outstanding debt ---
       window.openReceivePaymentModal = function(customerId) {
@@ -4772,7 +4707,7 @@ window.formatMoney = formatMoney;
 
         let refundTotal = 0;
         let anyReturned = false;
-        const rpcItems = []; // BUG FIX (#1): เก็บไว้ส่งขึ้น process_return RPC ด้วย
+        const rpcItems = []; // เก็บไว้ส่งขึ้น process_return RPC
         const _restock = [];
         let _gross = 0;
         const _ratio = window.billRefundRatio(bill);
@@ -4809,7 +4744,6 @@ window.formatMoney = formatMoney;
 
         const fullyReturned = bill.items.every(item => roundStock(item.returnedQty || 0) >= roundStock(item.qty));
         bill.isRefunded = fullyReturned;
-        window.posStore?.touchBill(bill.id);   // v11: บิลเก่ากว่า 7 วันถูกแก้ ต้องสั่งให้เขียนใหม่
 
         db.returns = db.returns || [];
         const creditNoteNo = window.getCreditNoteNumber();
@@ -4833,16 +4767,9 @@ window.formatMoney = formatMoney;
           ? `บันทึกใบลดหนี้ ${creditNoteNo} เรียบร้อย: หักยอดหนี้ ${formatMoney(refundTotal)}`
           : `บันทึกใบลดหนี้ ${creditNoteNo} เรียบร้อย: คืนเงิน ${formatMoney(refundTotal)}`);
 
-        // BUG FIX (#1): เดิมจบแค่ตรงนี้ — สถานะบิล/สต็อกที่คืนไม่เคยไปถึง Supabase เลยถ้าบิลนั้น
-        // เคย sync ผ่าน RPC ไปแล้ว (ติดธง _syncedViaRPC ถาวร) เรียก process_return แบบ
-        // fire-and-forget เหมือนแพทเทิร์นเดียวกับ syncBillToSupabaseRPC — ถ้าออฟไลน์/พลาด ข้อมูล
-        // ก็ยังถูกต้องในเครื่องเหมือนเดิม แค่รอ sync รอบถัดไปไม่ได้ (ไม่มี batch fallback สำหรับ
-        // การคืนสินค้าในตอนนี้ เพราะต้องรู้ bill server-side id ก่อน — ปล่อยให้กดซิงค์ใหม่ได้จาก
-        // ปุ่ม forceSyncNow ถ้าพลาดจริง)
+        // ส่งสถานะคืนสินค้า/สต็อกขึ้น process_return ผ่านคิวซิงค์ (ถ้าพลาดกดซิงค์ซ้ำได้)
         window.enqueueSync({ type: 'return', payload: { billId: bill.id, items: rpcItems.map(i => ({ variant_id: i.variant_id, fraction_id: i.fraction_id, quantity: i.quantity })), restock: _restock, returnRef: creditNoteNo, shiftId: db.currentShift?.id || null, isCredit, customerId: bill.customerId, refund: refundTotal, fully: fullyReturned } });
       };
-
-      window.syncReturnToSupabaseRPC = function() { /* v10: ใช้คิวซิงค์ (type 'return') แทน */ };
 
       // CAMERA SCANNER
       // Generalized to scan into any target input (defaults to the sale-page search box) —
@@ -4900,25 +4827,16 @@ window.formatMoney = formatMoney;
       window.addEventListener('DOMContentLoaded', () => {
         window.renderSaleHome?.();
         window.refreshAuthStatus?.();
-        // BUG FIX: syncCategoryBarOffset() used to only run on window 'resize', never on
-        // initial load — the category bar and pagination bar (both position:sticky, set via
-        // inline style.top computed here) never got a starting `top` value. Without it the two
-        // bars can end up stacked on top of each other at the same position, with the
-        // higher z-index category bar sitting over the pagination bar's ‹ › buttons and
-        // silently swallowing every tap on them ("ปุ่มเปลี่ยนหน้าไม่ทำงาน/ล็อก"). Running it once
-        // here (and again after every category/page render, below) keeps the offsets correct
-        // from the very first paint.
+        // คำนวณ offset ของแถบหมวด/แถบเปลี่ยนหน้าตั้งแต่โหลดครั้งแรกและหลังเรนเดอร์ทุกครั้ง
+        // กันสองแถบ sticky ซ้อนกันจนปุ่ม ‹ › กดไม่ติด
         setTimeout(() => window.syncCategoryBarOffset?.(), 0);
       });
     </script>
   
-<script type="text/x-pos-app">
-/* Smart POS Pro V9.60 SQL Schema Compatibility Bridge */
+<script>
+/* Supabase data layer: ดึงข้อมูลจากคลาวด์ + ตัวช่วยหน้า (showView / renderSaleHome) */
 (function(){
-  window.SQL_SCHEMA_VERSION='Smart_POS_Pro_Enterprise_Full_Database_Schema';
-
-  // Compatibility fallbacks for missing functions in the original page.
-  window.showView = window.showView || function(viewId){
+  window.showView = function(viewId){
     document.querySelectorAll('.view-content').forEach(function(v){ v.classList.add('hidden'); });
     const view=document.getElementById('view-'+viewId);
     if(view) view.classList.remove('hidden');
@@ -4936,13 +4854,8 @@ window.formatMoney = formatMoney;
     }
   };
 
-  // UX: added a fixed "ทั้งหมด" tile ahead of the category buttons so staff can browse or
-  // search the whole catalog in one tap without first having to guess which category an item
-  // was filed under — this is what actually makes "find it fast" possible when unsure.
-  // UX rework: category "cards" replaced by a sticky, always-reachable category bar (see
-  // window.renderCategoryBar in the main script) — this now just kicks off that bar plus the
-  // default "all products" grid, and keeps the bar's sticky offset in sync with the header.
-  window.renderSaleHome = window.renderSaleHome || function(){
+  // หน้าขาย: แถบหมวดหมู่ (sticky, ดู window.renderCategoryBar) + กริดสินค้า "ทั้งหมด" เป็นค่าเริ่มต้น
+  window.renderSaleHome = function(){
     if(!window.db) return;
     window.renderCategoryBar?.();
     window.syncCategoryBarOffset?.();
@@ -4955,17 +4868,9 @@ window.formatMoney = formatMoney;
     const r=fn(c.from(table)); if(r && typeof r.then==='function'){ const {data,error}=await r; if(error) throw error; return data; }
     return r;
   }
-  // BUG FIX: this used to run automatically on every page load (50ms after DOMContentLoaded)
-  // and would silently wipe out db.products with whatever Supabase returned — including an
-  // EMPTY catalog if this was the first-ever connection before anything had been pushed up yet.
-  // It also re-keyed every product/customer using Supabase's own row UUID instead of the
-  // original local id, which is what the cart, receipts, and bill history all still referred
-  // to — breaking those references on the very next reload. Pulling from the cloud is now an
-  // explicit action (Settings > ฐานข้อมูล Supabase > "ดึงข้อมูลจากคลาวด์"), and the merge below
-  // matches existing local products/customers by SKU/phone so their local id — and any
-  // in-progress local edits to stock — are preserved rather than overwritten.
+  // ดึงข้อมูลจากคลาวด์เฉพาะเมื่อผู้ใช้สั่ง (ตั้งค่า > ฐานข้อมูล Supabase) จับคู่สินค้า/ลูกค้าเดิมด้วย
+  // SKU/เบอร์โทร เพื่อคง id ในเครื่องและไม่ทับสต็อกที่กำลังแก้ไขอยู่
   window.loadDatabaseState=async function(silent){
-    if (window.isPerEmployeeAuth?.() && !window.serverIsManager?.()) return window.showAlert?.('เฉพาะผู้จัดการ','การดึงข้อมูลจากคลาวด์ทำได้เฉพาะผู้จัดการ/เจ้าของ (แคชเชียร์ไม่มีสิทธิ์อ่านต้นทุน/สต็อกทั้งหมด)',true);
     const c=sb(); if(!c) return false;
     // Run each table fetch independently (allSettled, not all) so a problem with one table
     // — e.g. a bad embedded-relationship query — doesn't block every other table from loading,
@@ -4997,7 +4902,7 @@ window.formatMoney = formatMoney;
     try{
       const {categories:cats,products:prods,product_categories:links,product_variants:vars,product_fractions:fracs,customers:custs,bills}=results;
       window.db=window.db||{};
-      // (v10) ส่งคิวที่ค้างให้เสร็จก่อน — ถ้ายังมีรายการค้าง จะไม่เอาสต็อก/ยอดหนี้จากเซิร์ฟเวอร์มาทับ (เพราะยังไม่รวมรายการเหล่านั้น)
+      // ส่งคิวที่ค้างให้เสร็จก่อน — ถ้ายังมีรายการค้าง จะไม่เอาสต็อก/ยอดหนี้จากเซิร์ฟเวอร์มาทับ
       await window.flushSyncQueue?.(true);
       const _hasPending=(db.syncQueue||[]).length>0;
 
@@ -5021,9 +4926,7 @@ window.formatMoney = formatMoney;
       // fraction unit use"), so it's converted back on the way in (1 / quantity_ratio).
       const fracsByVariant={}; (fracs||[]).forEach(f=>(fracsByVariant[f.variant_id]=fracsByVariant[f.variant_id]||[]).push(f));
 
-      // product_variants columns here are variant_name / price / cost_price — direct values,
-      // no override-with-parent-fallback (this schema's `products` table has no price/cost
-      // columns of its own at all, unlike the previous schema this app used to target).
+      // product_variants: variant_name / price / cost_price เป็นค่าตรง ไม่มี fallback ไปที่ products
       const rawVarsByProduct={}; (vars||[]).forEach(v=>(rawVarsByProduct[v.product_id]=rawVarsByProduct[v.product_id]||[]).push(v));
 
       // Products — match an existing local product by SKU (the one field that's stable across
@@ -5043,7 +4946,7 @@ window.formatMoney = formatMoney;
           const existing=db.products[existingId];
           existing.name=p.name;
           existing.cat=catsByProduct[p.id]||existing.cat;
-          existing.image=p.image_url||existing.image;
+          if(p.image_url&&/^https?:/.test(p.image_url))existing.imageUrl=p.image_url;
           if(p.min_stock_alert!=null)existing.minStock=+p.min_stock_alert;
           matchedProd++;
           if(!_hasPending){   // ให้สต็อกตรงกับเซิร์ฟเวอร์ + เพิ่มตัวเลือก (variant) ที่เครื่องอื่นเพิ่มไว้
@@ -5069,7 +4972,7 @@ window.formatMoney = formatMoney;
             }))
           }));
           db.products[p.id]={
-            id:p.id,name:p.name,code:sku,cat:catsByProduct[p.id]||[],image:p.image_url||'📦',
+            id:p.id,name:p.name,code:sku,cat:catsByProduct[p.id]||[],image:'📦',imageUrl:(p.image_url&&/^https?:/.test(p.image_url))?p.image_url:null,
             minStock:+(p.min_stock_alert||0),
             variants:remoteVariants.length?remoteVariants:[{id:null,sizeName:'ปกติ',barcode:'',cost:0,price:0,stock:0,fractions:[]}]
           };
@@ -5129,29 +5032,15 @@ window.formatMoney = formatMoney;
     }catch(e){ console.error('loadDatabaseState',e); window.showAlert?.('ดึงข้อมูลไม่สำเร็จ','เกิดข้อผิดพลาดระหว่างประมวลผลข้อมูลที่ดึงมา: '+(e.message||e),true); return false; }
   };
 
-  // Explicit, confirmed pull — replaces the old silent auto-pull on every page load.
+  // ดึงข้อมูลจากคลาวด์แบบสั่งเอง พร้อมยืนยันก่อน
   window.confirmPullFromCloud=function(){
     if(!confirm('ดึงข้อมูลล่าสุดจากฐานข้อมูลคลาวด์มาเพิ่มในเครื่องนี้?\n\n(เพิ่มรายการที่ยังไม่มีในเครื่องนี้ และปรับจำนวนสต็อก/ยอดหนี้ให้ตรงกับเซิร์ฟเวอร์ เมื่อไม่มีรายการค้างส่ง)'))return;
     window.loadDatabaseState(false);
   };
 
-  // NOTE: previously this read from different localStorage keys ('pos_sb_url'/'pos_sb_key')
-  // than the Settings UI actually saves to ('pos_supabase_url'/'pos_supabase_anon_key' via
-  // window.getSupabaseClient), so this bridge's client was always null and every RPC call
-  // below silently no-op'd. Reuse the real client so the RPC path actually connects.
+  // ใช้ client ตัวเดียวกับหน้าตั้งค่า (pos_supabase_url / pos_supabase_anon_key)
   window.getSupabase = window.getSupabaseClient;
 
-  // NOTE: this used to also carry window.calculateCartViaDBServer / window.processDatabaseCheckout
-  // — a second, disconnected "database-authoritative checkout" path from an earlier iteration
-  // of this app. It was never wired to any button (window.processPaymentRequest + the
-  // window.syncBillToSupabaseRPC → create_sale RPC pairing is the real, active checkout path),
-  // and it called calculate_order_totals / process_checkout_transaction, neither of which exist
-  // in this schema (superseded by create_sale, which computes totals server-side from the line
-  // items itself). Removed rather than updated, since dead code referencing functions that no
-  // longer exist is worse than no code at all.
-
-  // Cloud pull is now explicit only (see window.confirmPullFromCloud, wired to the Settings
-  // button) — no longer runs automatically on page load. See the note above loadDatabaseState.
 })();
 </script>
 
@@ -5206,7 +5095,7 @@ window.formatMoney = formatMoney;
   </div>
 
   <!-- Variants (sizes) — a product can now have multiple sizes/models added here in one go,
-       instead of being locked to exactly one via the old single-row form. -->
+       one by one. -->
   <div class="border-t pt-3">
     <h4 class="text-xs font-bold text-slate-500 mb-2">📏 ขนาด/รุ่นสินค้า (เพิ่มได้หลายขนาด)</h4>
     <div class="grid grid-cols-2 sm:grid-cols-6 gap-1.5 mb-2 text-xs">
@@ -5254,29 +5143,19 @@ window.formatMoney = formatMoney;
 </div>
 
 
-<script type="text/x-pos-app">
-/* Enterprise Management Repair Layer */
+<script>
+/* Enterprise Management: ผู้ใช้/PIN, ซัพพลายเออร์, รับสินค้า, ฟอร์มสินค้า, ปิดกะ ฯลฯ */
 (function(){
 const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const sb=()=>window.getSupabase?.()||null;
 const rolePerm=r=>r==='OWNER'?['ALL']:r==='MANAGER'?['SALE','PRODUCT_CREATE','PRODUCT_EDIT','PRODUCT_DELETE','PURCHASE_ORDER','GOODS_RECEIPT','REPORTS']:['SALE'];
 function ensure(){if(!window.db)return;db.users=db.users||[];if(!db.users.some(u=>u.role==='OWNER'))db.users.unshift({id:'owner-local',name:'เจ้าของร้าน',needsPinSetup:true,role:'OWNER',permissions:['ALL'],protected:true});db.users.forEach(u=>{u.role=u.role||'CASHIER';u.permissions=u.permissions||rolePerm(u.role);});window.migratePlaintextPins?.();}
-window.ensure = ensure; // เพิ่มขึ้นมา: ให้สคริปต์บล็อกอื่น (เช่นตัวช่วยตั้งค่าเริ่มต้น) เรียกใช้ได้ด้วย ของเดิม scope ปิดอยู่ในนี้ที่เดียว
-// BUG FIX: this used to persist only {users, suppliers, purchaseOrders, cashLedger} to
-// localStorage. Everything else — every sale (db.bills), every stock/product change
-// (db.products), every customer & their debt (db.customers), categories, store settings —
-// was NEVER saved locally at all. With no Supabase connection configured (fully optional),
-// a page refresh or the browser tab being killed silently wiped out an entire day's sales.
-// Now the whole db object is persisted as one blob, matching the "Offline-First" behavior
-// the manual describes.
-// BUG FIX (#5): เดิมถ้า localStorage เต็ม (ง่ายมากถ้ามีรูปสินค้าเป็น base64 ปนอยู่เยอะๆ — ดู
-// bulk image import fallback) จะ catch เงียบๆ แค่ console.warn ผู้ใช้เห็น toast "บันทึกการขาย
-// สำเร็จ" ตามปกติ ทั้งที่ข้อมูลไม่ถูกเขียนลงเครื่องเลยจริงๆ — เพิ่ม throttle กันเด้งซ้ำถี่เกินไป
-// (ครั้งต่อไปห่างกันอย่างน้อย 10 วิ) แล้วโชว์ alert ที่มองเห็นได้จริงแทน
+window.ensure = ensure; // เปิดให้สคริปต์บล็อกอื่น (เช่นตัวช่วยตั้งค่าเริ่มต้น) เรียกใช้ได้
+// เก็บทั้งก้อน db ลง localStorage (Offline-First) ถ้าพื้นที่เต็มจะแจ้งเตือนให้เห็นจริง (throttle ไม่เกิน 1 ครั้ง/10 วินาที)
 let _persistFailAlertAt = 0;
 function persist(){
   try{
-    window.posStore.save(db);   // v11: IndexedDB (เขียนแบบ debounce, บิลเขียนเฉพาะที่เปลี่ยน)
+    localStorage.setItem('pos_full_db_state',JSON.stringify(db,(k,v)=>k==='activeUser'?undefined:v));
   }catch(e){
     console.warn('persist failed (localStorage full or blocked)',e);
     const now = Date.now();
@@ -5289,19 +5168,10 @@ function persist(){
   }
 }
 try{
-  const saved=window.__POS_SAVED__||null;   // v11: ตัวโหลด (IndexedDB) อ่านไว้ให้ก่อนรันสคริปต์ของแอป
+  const saved=JSON.parse(localStorage.getItem('pos_full_db_state')||'null');
   if(saved){ Object.assign(window.db||{}, saved); if(window.db)window.db.activeUser=null; }
-  else { // migrate any older partial save so existing installs don't lose their data
-    Object.assign(window.db||{}, JSON.parse(localStorage.getItem('pos_enterprise_state')||'{}'));
-  }
 }catch(e){}
 window.persist=persist;
-window.posStore.onError=function(e){   // เขียน IndexedDB ไม่สำเร็จ (พื้นที่เต็ม/ถูกบล็อก) — ต้องให้ผู้ใช้เห็นจริง ไม่ใช่เงียบ
-  console.warn('persist failed',e);
-  const now=Date.now();
-  if(now-_persistFailAlertAt>10000){_persistFailAlertAt=now;
-    window.showAlert?window.showAlert('⚠️ บันทึกข้อมูลไม่สำเร็จ','พื้นที่จัดเก็บข้อมูลในเครื่องเต็ม หรือถูกบล็อก — ข้อมูลล่าสุดอาจไม่ถูกบันทึก กรุณาสำรองข้อมูลด่วน',true):alert('⚠️ บันทึกข้อมูลไม่สำเร็จ');}
-};
 window.canDo=p=>{ensure();const u=db.activeUser||((db.users||[]).some(x=>x.pinHash)?null:db.users.find(x=>x.role==='OWNER'));return !!u&&(u.role==='OWNER'||u.permissions?.includes('ALL')||u.permissions?.includes(p));};
 const ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
 ensure();
@@ -5311,16 +5181,11 @@ window.renderUserManagerList=function(){ensure();const c=document.getElementById
 // NOTE: the PIN input is intentionally left blank when editing — pin_hash cannot be reversed
 // back into the original PIN, so re-entering it is only required when actually changing it.
 window.editUser=id=>{const u=db.users.find(x=>x.id===id);if(!u)return;document.getElementById('edit-user-id').value=id;document.getElementById('user-name-input').value=u.name;document.getElementById('user-pin-input').value='';document.getElementById('user-pin-input').placeholder='ใส่ PIN ใหม่ (เว้นว่างไว้ถ้าไม่เปลี่ยน)';let r=document.getElementById('user-role-input');if(!r){r=document.createElement('select');r.id='user-role-input';r.className='w-full border p-2 rounded-xl text-xs';r.innerHTML='<option value="CASHIER">พนักงานขาย</option><option value="MANAGER">ผู้จัดการ</option><option value="OWNER">เจ้าของร้าน</option>';document.getElementById('user-pin-input').insertAdjacentElement('afterend',r);}r.value=u.role;};
-// BUG FIX (security): PINs were stored and would have been synced to Supabase as plaintext —
-// anyone with the anon key could read every employee's PIN straight out of the database.
-// Now only a SHA-256 hash (window.hashPin) is ever stored in db.users[].pinHash / sent as
-// app_users.pin; the raw digits never leave the input field.
+// PIN เก็บเป็น hash เท่านั้น (window.makePinHash) ทั้งในเครื่องและ app_users.pin
 window.saveUser=async function(){if(!ok('ALL'))return;ensure();const id=document.getElementById('edit-user-id').value,n=document.getElementById('user-name-input').value.trim(),pin=document.getElementById('user-pin-input').value.trim(),role=document.getElementById('user-role-input')?.value||'CASHIER';if(!n)return window.showAlert?.('ข้อมูลไม่ถูกต้อง','กรุณากรอกชื่อพนักงาน',true);if(pin&&!/^\d{4}$/.test(pin))return window.showAlert?.('ข้อมูลไม่ถูกต้อง','PIN ต้องเป็นตัวเลข 4 หลัก',true);if(pin&&window.WEAK_PINS.includes(pin))return window.showAlert?.('PIN เดาง่ายเกินไป','เลือก PIN ที่ไม่ใช่เลขซ้ำ/เรียงกัน (เช่น 0000, 1234)',true);if(id){const u=db.users.find(x=>x.id===id);if(u.role==='OWNER'&&role!=='OWNER')return window.showAlert?.('ไม่อนุญาต','ไม่สามารถลดสิทธิ์เจ้าของร้านได้',true);const upd={name:n,role,permissions:rolePerm(role)};if(pin)upd.pinHash=await window.makePinHash(pin);delete u.pin;Object.assign(u,upd);}else{if(!pin)return window.showAlert?.('ข้อมูลไม่ถูกต้อง','กรุณากำหนด PIN 4 หลักให้พนักงานใหม่',true);db.users.push({id:'u-'+Date.now(),name:n,role,permissions:rolePerm(role),pinHash:await window.makePinHash(pin)});}persist();window.renderUserManagerList();window.renderEmployeeLoginScreen?.();};
 window.deleteUser=id=>{if(!ok('ALL'))return;const u=db.users.find(x=>x.id===id);if(!u||u.role==='OWNER')return window.showAlert?.('ไม่อนุญาต','ไม่สามารถลบเจ้าของร้านได้',true);db.users=db.users.filter(x=>x.id!==id);persist();window.renderUserManagerList();window.renderEmployeeLoginScreen?.();};
 
-// Migrates any legacy plaintext `pin` field (from before this fix, including the hardcoded
-// '0000' owner default) into a hashed `pinHash`, one time, so nothing plaintext lingers in
-// memory/localStorage/Supabase going forward.
+// อัปเกรดข้อมูลเครื่องเดิม: แปลง `pin` ตัวเลขดิบ (ถ้ามี) เป็น `pinHash` ครั้งเดียว
 window.migratePlaintextPins=async function(){let changed=false;for(const u of (db.users||[])){if(u.pin&&!u.pinHash){u.pinHash=await window.makePinHash(u.pin);delete u.pin;changed=true;}}if(changed)persist();};
 
 // ==========================================
@@ -5415,7 +5280,6 @@ let _pinFails = {}, _pinSetupFirst = null;
     window.resetIdleTimer?.();
     window.updateActiveUserBadge?.();
     window.showToast?.(`สวัสดี ${u.name} 👋`);
-    window.afterLocalLogin?.(u, pin);   // v11: ล็อกอินบัญชีรายพนักงานบนเซิร์ฟเวอร์ (ถ้าเปิดใช้) ไม่บล็อกหน้าจอ
     if (weak) window.showAlert?.('⚠️ PIN เดาง่าย', 'บัญชีนี้ใช้ PIN ที่เดาง่าย กรุณาเปลี่ยนที่ ตั้งค่า > ผู้ใช้งาน', true);
   };
 
@@ -5448,10 +5312,7 @@ document.addEventListener('DOMContentLoaded',()=>{setTimeout(()=>window.renderEm
 // ==========================================
 // PRODUCT FORM — modernized: photo capture, barcode scan-to-field, multiple sizes/variants
 // per product added in one form, and split-sale ("แบ่งขาย") units manageable per variant.
-// BUG FIX: the old single-variant form always saved `variants:[{...one row...}]` — editing an
-// existing product that had more than one size (e.g. pulled in from Supabase) silently
-// DISCARDED every size but the first the moment it was saved. Now every existing variant loads
-// into the editable list and is preserved.
+// แก้ไขสินค้าหลายขนาดแล้วทุก variant ถูกโหลดและเก็บไว้ครบ
 // ==========================================
 let pmVariants = [];
 let pmSelectedCats = []; // multi-category selection state for the product being edited
@@ -5671,8 +5532,7 @@ window.openProductModal = function(id) {
     set('pm-image', p?.image || '');
   }
 
-  // Load EVERY existing variant (not just the first) so editing a multi-size product doesn't
-  // silently drop the rest of its sizes.
+  // โหลดทุก variant (ไม่ใช่แค่ตัวแรก) เมื่อแก้ไขสินค้าหลายขนาด
   pmVariants = p ? p.variants.map(v => ({ ...v, fractions: (v.fractions || []).map(f => ({ ...f })) })) : [];
   window.renderProductVariantList();
   ['pmv-name', 'pmv-barcode', 'pmv-cost', 'pmv-price', 'pmv-stock'].forEach(fid => document.getElementById(fid).value = '');
@@ -5809,7 +5669,7 @@ window.saveProduct = async function() {
           const path = `${pid}_${Date.now()}.jpg`;
           const { error: upErr } = await c.storage.from('product-images').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
           if (!upErr) { const { data } = c.storage.from('product-images').getPublicUrl(path); imageUrl = data.publicUrl; }
-          else { imageUrl = pmPhotoDataUrl; }
+          else { imageUrl = pmPhotoDataUrl; window.showToast?.('⚠️ อัปโหลดรูปขึ้นคลาวด์ไม่สำเร็จ (' + (upErr.message || 'สิทธิ์ไม่พอ') + ') — เก็บรูปไว้ในเครื่องก่อน จะลองส่งใหม่ตอนซิงค์'); }
         } else {
           imageUrl = pmPhotoDataUrl;
         }
@@ -5858,16 +5718,8 @@ window.deleteProduct = async id => {
   window.populatePOPickers?.();
 };
 
-// NOTE: the action-column patch that used to live here (bolting a "แก้ไข/ลบ" cell onto each
-// row by matching Object.values(db.products)[rowIndex]) has been removed — it silently
-// targeted the wrong product for any item with more than one variant, or whenever a filter,
-// sort, or search reduced/reordered the rows (which is most of the time). The action buttons
-// are now built directly into each row in window.renderStockTable() using the row's actual
-// product id, so they can never point at the wrong product.
-
 window.confirmReceivePO=async function(){if(!ok('GOODS_RECEIPT'))return;const supplierId=document.getElementById('po-supplier-select').value;let docRef=document.getElementById('po-doc-ref').value.trim();const terms=parseInt(document.getElementById('po-credit-terms').value)||30;if(!supplierId)return window.showAlert?.('ข้อมูลไม่ครบ','กรุณาเลือกซัพพลายเออร์',true);if(!poTempItems?.length)return window.showAlert?.('ไม่มีรายการ','กรุณาเพิ่มรายการรับสินค้า',true);
-  // เลขที่ใบส่งของ is now optional — if the supplier's own delivery-note number wasn't typed
-  // in, run our own sequential number automatically rather than blocking the whole receipt.
+  // เลขที่ใบส่งของไม่บังคับ — ถ้าไม่กรอกจะรันเลขอัตโนมัติ
   if(!docRef){docRef=window.getGoodsReceiptNumber();document.getElementById('po-doc-ref').value=docRef;}
   const receipt={id:'GR-'+Date.now(),supplierId,docRef,terms,status:'RECEIVED',items:poTempItems.map(x=>({...x})),receivedAt:new Date().toISOString()};
   // Delivery-note attachments (multiple images and/or PDFs): upload each to Supabase Storage
@@ -5964,7 +5816,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    SHIFT / CASH DRAWER MANAGEMENT (เปิด-ปิดร้าน, เงินทอนเริ่มต้น, เงินเข้า-ออกลิ้นชัก,
    รายงานสรุปยอดปิดร้าน) — previously referenced throughout the Supabase sync layer
@@ -6133,7 +5985,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       diffEl.innerHTML = diff > 0
         ? `<span class="text-indigo-600">เงินเกิน ${fmt(diff)}</span>`
         : `<span class="text-rose-600">เงินขาด ${fmt(Math.abs(diff))}</span>`;
-      // เพิ่มขึ้นมา: บังคับให้บันทึกสาเหตุทุกครั้งที่ยอดไม่ตรง เก็บไว้เช็คย้อนหลังได้ว่าพลาดจากอะไร
+      // ยอดไม่ตรงต้องบันทึกสาเหตุทุกครั้ง เก็บไว้ตรวจย้อนหลัง
       noteWrap.classList.remove('hidden');
     }
   };
@@ -6151,7 +6003,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     const sum = window._shiftCloseSummary || computeShiftSummary(s);
     const diff = roundAmt(actual - sum.expectedCash);
     const diffNote = document.getElementById('shift-diff-note').value.trim();
-    // เพิ่มขึ้นมา: ถ้ายอดไม่ตรงต้องกรอกสาเหตุก่อนปิดร้านได้ กันลืมบันทึกแล้วหาสาเหตุย้อนหลังไม่ได้
+    // ถ้ายอดไม่ตรงต้องกรอกสาเหตุก่อนปิดร้าน
     if (diff !== 0 && !diffNote) return window.showAlert?.('กรุณาระบุสาเหตุ', 'ยอดเงินไม่ตรง กรุณาบันทึกสาเหตุที่คาดว่าเกิดขึ้นก่อนปิดร้าน เพื่อเก็บไว้ตรวจสอบภายหลัง', true);
 
     s.endTime = Date.now();
@@ -6187,7 +6039,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    PRODUCT EXPORT — Excel table with clickable image links (labelled with the product
    name instead of a raw URL) and a ZIP download of the actual image files renamed to
@@ -6245,10 +6097,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       return { r, rowIdx };
     });
 
-    // BUG FIX / PERF (#7): เดิม fetch รูปทีละแถวแบบ sequential (await ใน for loop) — ถ้าสินค้า
-    // หลายร้อย/พันรายการและรูปมาจากโฮสต์ภายนอกจะรวมกันช้ามาก เปลี่ยนเป็นดึงแบบขนานทีละ batch
-    // (6 รูปพร้อมกัน) เร็วขึ้นหลายเท่าโดยยังไม่ยิงคำขอพร้อมกันทั้งหมดจนโดน rate-limit ฝั่งโฮสต์รูป
-    // แคชรูปที่ดึงมาแล้วไว้ ถ้าสินค้าเดียวกันมีหลายขนาด/สีจะได้ไม่ต้องดึงรูปซ้ำ
+    // ดึงรูปแบบขนานทีละ 6 รูป (กัน rate-limit) และแคชรูปที่ดึงแล้วสำหรับสินค้าหลายขนาด/สี
     const imageCache = {};
     const uniqueUrls = [...new Set(rowMeta.filter(m => m.r.imgUrl && m.r.imgUrl !== '-').map(m => m.r.imgUrl))];
     const BATCH_SIZE = 6;
@@ -6327,7 +6176,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    DATA HEALTH CHECK (ตรวจสุขภาพข้อมูล) — สแกนหาความผิดปกติทั้งในเครื่องและบน Supabase
    Storage แล้วรายงานให้ดู ไม่แก้อะไรให้อัตโนมัติ (ป้องกันลบ/แก้ข้อมูลผิดโดยไม่ตั้งใจ)
@@ -6368,10 +6217,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     window.runDataHealthCheck(); // รันเช็คใหม่ให้เห็นผลทันทีว่ารายการนี้หายไปแล้ว
   };
 
-  // เพิ่มขึ้นมา: การ์ดพิเศษสำหรับ "รูปกำพร้าบน Supabase Storage" ที่มีปุ่มลบให้กดตรงนี้ได้เลย
-  // แทนที่จะแค่รายงานชื่อไฟล์ไว้เฉยๆ แล้วให้ไปลบเองที่ Supabase Dashboard — เก็บรายชื่อไฟล์ไว้ใน
-  // window._orphanImages เพื่อให้ deleteOrphanImage อ้างอิงด้วย index (ไม่ใช้ชื่อไฟล์ตรงๆ ใน
-  // onclick กันปัญหาอักขระพิเศษในชื่อไฟล์ทำให้ HTML/JS พัง)
+  // การ์ดรูปกำพร้าบน Storage พร้อมปุ่มลบ — เก็บรายชื่อใน window._orphanImages และอ้างด้วย index (ไม่ใส่ชื่อไฟล์ใน onclick)
   function orphanImageCard(title, files){
     window._orphanImages = files.slice();
     if (!files.length) return `<div class="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl p-3 text-center text-[11px] font-bold" id="orphan-images-card">✅ ลบรูปกำพร้าหมดแล้ว</div>`;
@@ -6420,11 +6266,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     const client = window.getSupabaseClient?.();
     if (!client) return window.showAlert?.('ยังไม่ได้เชื่อมต่อ', 'ต้องเชื่อมต่อ Supabase ก่อนถึงจะลบรูปได้', true);
 
-    // BUG FIX: เดิมส่งไฟล์ทั้งหมดไปลบใน .remove() ครั้งเดียว — ถ้ามีเป็นพันไฟล์ (เจอจริงในร้านที่มี
-    // สินค้าเยอะ เช่น 2087 ไฟล์) เสี่ยง request timeout หรือพังกลางทางโดยไม่รู้เลยว่าลบไปแล้วกี่ไฟล์
-    // และไม่มีทางลองใหม่เฉพาะไฟล์ที่ค้างได้ — แก้เป็นแบ่งลบทีละชุด (100 ไฟล์/ครั้ง) พร้อมโชว์ความ
-    // คืบหน้าบนปุ่มเอง ถ้าชุดไหนพลาดจะเก็บเฉพาะไฟล์ที่ยังไม่สำเร็จไว้ใน window._orphanImages ทำให้
-    // กดปุ่ม "ลบทั้งหมด" ซ้ำ = ลองใหม่เฉพาะไฟล์ที่ค้างเท่านั้น ไม่ต้องเริ่มใหม่ทั้งชุด
+    // ลบทีละ 100 ไฟล์พร้อมแสดงความคืบหน้า ชุดที่พลาดจะคงไว้ใน window._orphanImages ให้กดลบซ้ำเฉพาะที่ค้าง
     const CHUNK = 100;
     const failed = [];
     let doneCount = 0;
@@ -6459,13 +6301,20 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     const issues = [];
     const products = Object.values(db.products || {});
 
-    // 1) ลิงก์รูปเสีย — เศษจากบัค URL.createObjectURL เก่า (ดู bulk image import) ที่ใช้ไม่ได้
-    //    อีกต่อไปหลัง reload หน้าเว็บ ถ้ายังมีอยู่แปลว่าเป็นข้อมูลเก่าก่อนแก้บัคนี้
+    // 1) ลิงก์รูปเสีย (blob: URL ใช้ข้ามการรีโหลดหน้าไม่ได้)
     const brokenImg = products.filter(p => p.imageUrl && p.imageUrl.startsWith('blob:'));
     if (brokenImg.length) issues.push({
       level: 'error', title: 'ลิงก์รูปภาพเสีย (blob: URL ที่ใช้ไม่ได้แล้ว)', count: brokenImg.length,
       detail: brokenImg.map(p => p.name).join(', '),
       fixAction: `window.clearBrokenImageLinks(${JSON.stringify(brokenImg.map(p => p.id))})`
+    });
+
+    // 1.1) รูปที่ยังเป็น base64 (ยังไม่ขึ้นคลาวด์) — เครื่องอื่นจะไม่เห็นรูป และทำให้ข้อมูลในเครื่องบวม
+    const localOnlyImg = products.filter(p => p.imageUrl && p.imageUrl.startsWith('data:'));
+    if (localOnlyImg.length) issues.push({
+      level: 'info', title: 'รูปสินค้ายังอยู่ในเครื่องเท่านั้น (ยังไม่ขึ้น Supabase Storage)', count: localOnlyImg.length,
+      detail: localOnlyImg.slice(0, 20).map(p => p.name).join(', ') + (localOnlyImg.length > 20 ? ` …อีก ${localOnlyImg.length - 20}` : ''),
+      fixAction: `window.syncProductsToSupabase(false)`
     });
 
     // 2) สต็อกติดลบ — ปกติไม่ควรเกิดถ้าทุกจุดหักสต็อกถูกต้อง แปลว่ามีจุดหักซ้ำ/ข้ามการเช็คที่ไหนสักแห่ง
@@ -6496,10 +6345,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     const client = window.getSupabaseClient?.();
     if (client) {
       try {
-        // BUG FIX: .list() คืนมาสูงสุดตาม limit ต่อครั้งเท่านั้น (limit:1000 เดิม) — ร้านที่มีรูป
-        // สินค้าเกิน 1000 ไฟล์จะเห็นแค่หน้าแรก ทำให้ไฟล์จริงที่มีอยู่แต่อยู่นอกหน้าแรกถูกเข้าใจผิด
-        // ว่า "ไม่มีอยู่จริง" ไปหมด (นี่คือสาเหตุจริงที่ตัวเลขออกมาสูงผิดปกติ เช่น 1000+ รายการ ทั้งที่
-        // รูปยังอยู่ครบ) แก้โดยวนดึงทีละหน้าจนกว่าจะได้หน้าที่สั้นกว่า limit (แปลว่าหมดแล้วจริงๆ)
+        // storage.list() จำกัดจำนวนต่อหน้า — วนดึงทีละหน้าจนได้หน้าที่สั้นกว่า limit
         const PAGE = 1000;
         let files = [], offset = 0, guard = 0;
         while (guard++ < 50) {
@@ -6547,7 +6393,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    FIRST-LAUNCH SETUP WIZARD
    เด้งอัตโนมัติตอนเปิดแอปครั้งแรก (db.setupWizardDone ยังไม่ true) คุมลำดับขั้นตอนที่ถูกต้อง:
@@ -6623,7 +6469,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    BACKUP / RESTORE / FACTORY RESET
    ทั้งสามฟังก์ชันทำงานกับ localStorage โดยตรงแล้วสั่ง location.reload() ให้แอปโหลดสถานะใหม่
@@ -6632,7 +6478,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
    ========================================== */
 (function(){
   const DB_KEY = 'pos_full_db_state';
-  const LEGACY_DB_KEY = 'pos_enterprise_state'; // เก็บไว้เผื่อเครื่องเก่ายังไม่ migrate
+  window.APP_VERSION = '1.0.0';
 
   // ---------------- สำรองข้อมูล (BACKUP) ----------------
   window.exportFullBackup = function(){
@@ -6669,7 +6515,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async function(){
+    reader.onload = function(){
       let parsed;
       try {
         parsed = JSON.parse(reader.result);
@@ -6694,9 +6540,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       if (!sure) return;
 
       try {
-        await window.posStore.replaceAll(payload);   // v11: เขียนลง IndexedDB
-        localStorage.removeItem(DB_KEY);
-        localStorage.removeItem(LEGACY_DB_KEY); // กันโหลดผิดคีย์เก่าทับของที่เพิ่งกู้คืนมา
+        localStorage.setItem(DB_KEY, JSON.stringify(payload));
         window.showToast?.('กู้คืนข้อมูลสำเร็จ — กำลังโหลดแอปใหม่...');
         setTimeout(() => location.reload(), 800);
       } catch (e) {
@@ -6731,11 +6575,9 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       // ลบเฉพาะคีย์ของแอปนี้ ไม่แตะ localStorage ของเว็บไซต์อื่นที่อาจแชร์โดเมนเดียวกัน (ไม่มีในเคสนี้ แต่กันไว้)
       // รวมถึงการตั้งค่าเชื่อมต่อ Supabase ด้วย เพราะถ้าจะส่งต่อเครื่องให้ร้านอื่นแล้วยังต่อฐานข้อมูล
       // เดิมค้างอยู่ ร้านใหม่จะดันไปดึง/ส่งข้อมูลชนกับร้านเก่าทันทีที่เปิดแอป
-      [DB_KEY, LEGACY_DB_KEY, 'pos_products_grid_cols', 'pos_products_per_page', 'pos_supabase_url', 'pos_supabase_anon_key'].forEach(k => localStorage.removeItem(k));
-      window.posStore.clear().catch(() => {}).finally(() => {   // v11: ล้าง IndexedDB ด้วย
-        window.showToast?.('ล้างข้อมูลเรียบร้อย — กำลังเริ่มต้นใหม่...');
-        setTimeout(() => location.reload(), 600);
-      });
+      [DB_KEY, 'pos_products_grid_cols', 'pos_products_per_page', 'pos_supabase_url', 'pos_supabase_anon_key'].forEach(k => localStorage.removeItem(k));
+      window.showToast?.('ล้างข้อมูลเรียบร้อย — กำลังเริ่มต้นใหม่...');
+      setTimeout(() => location.reload(), 600);
     } catch (e) {
       console.error('factory reset failed', e);
       window.showAlert?.('ล้างข้อมูลไม่สำเร็จ', String(e.message || e), true);
@@ -6743,9 +6585,9 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
   };
 })();
 </script>
-<script type="text/x-pos-app">
+<script>
 // ============================================================================
-// v10 — คิวซิงค์ (sync queue), ค่าตั้งต้นสต็อก/หนี้ (seeding), PIN แบบใหม่
+// คิวซิงค์ (sync queue), ค่าตั้งต้นสต็อก/หนี้ (seeding), PIN แบบ PBKDF2
 // แก้ตามรายงานตรวจสอบ: ไม่มี "fallback เขียนบิลตรง" อีกต่อไป ทุกธุรกรรมไปทาง RPC บนเซิร์ฟเวอร์
 // เท่านั้น (create_sale / process_return / receive_customer_payment / adjust_stock / receive_goods)
 // ส่งไม่สำเร็จจะค้างในคิว (db.syncQueue) แล้วลองใหม่เอง — เซิร์ฟเวอร์ปฏิเสธจริง (เช่นเกินวงเงิน)
@@ -6807,7 +6649,6 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     db.syncQueue = db.syncQueue || [];
     op.id = op.id || ('Q-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
     op.status = 'pending'; op.tries = 0; op.createdAt = Date.now();
-    op.by = (window.db && db.activeUser && db.activeUser.id) || null;   // ใครเป็นผู้สร้างรายการ (ใช้ตัดสินว่าใครส่งได้)
     db.syncQueue.push(op);
     if (window.persist) window.persist();
     window.refreshSyncBadge();
@@ -6840,7 +6681,6 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
   // ---------- ตัวช่วยบนเซิร์ฟเวอร์ ----------
   async function ensureUser(c, uid) {
     if (!uid) return;
-    if (window.isPerEmployeeAuth && window.isPerEmployeeAuth()) return;   // โหมดรายพนักงาน: แถวพนักงานถูกจัดการโดยผู้จัดการ/เจ้าของเท่านั้น
     const u = (db.users || []).find(x => x.id === uid);
     if (u && u.pinHash) {
       const { error } = await c.from('app_users').upsert(
@@ -6871,7 +6711,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     const { error } = await c.from('customers').upsert([{
       id: toUUID(cu.id), name: cu.name, phone: cu.phone || null, address: cu.address || '',
       credit_limit: roundAmt(cu.creditLimit ?? 50000)
-    }], { onConflict: 'id', ignoreDuplicates: !!(window.isPerEmployeeAuth && window.isPerEmployeeAuth() && window.serverIsManager && !window.serverIsManager()) });   // แคชเชียร์เพิ่มลูกค้าใหม่ได้ แต่ไม่ทับวงเงินที่ผู้จัดการตั้งไว้
+    }], { onConflict: 'id' });
     if (error) throw error;
     await window._seedDebts(c, [cu]);
   }
@@ -6912,7 +6752,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     for (let i = 0; i < items.length; i += 400) {
       const { error } = await c.rpc('seed_variant_stock', { p_items: items.slice(i, i + 400) });
       if (error) {
-        if (isMissingRpc(error)) { window._schemaOutdated = true; console.warn('seed_variant_stock ไม่พบบนเซิร์ฟเวอร์ — ยังไม่ได้รัน migration 0002'); return; }
+        if (isMissingRpc(error)) { window._schemaOutdated = true; console.warn('seed_variant_stock ไม่พบบนเซิร์ฟเวอร์ — ยังไม่ได้รัน supabase/schema.sql'); return; }
         throw error;
       }
       refs.slice(i, i + 400).forEach(v => { v._seeded = true; });
@@ -6966,7 +6806,6 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     });
     if (error) throw error;
     bill._syncedViaRPC = true; delete bill._rpcPending;
-    if (window.posStore) window.posStore.touchBill(bill.id);
     bill._serverBillId = (data && data.bill_id) || null;
   }
 
@@ -7043,14 +6882,9 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       if (!c) return window.syncQueueStats();
       const sess = await c.auth.getSession();
       if (!(sess && sess.data && sess.data.session)) return window.syncQueueStats();
-      if (window.isPerEmployeeAuth && window.isPerEmployeeAuth() && !window._serverUser) {
-        if (window.resolveServerUser) await window.resolveServerUser();
-        if (!window._serverUser) return window.syncQueueStats();
-      }
       db.syncQueue = db.syncQueue || [];
       for (const op of db.syncQueue.slice()) {
         if (op.status === 'failed') continue;
-        if (window.canFlushOp && !window.canFlushOp(op)) continue;   // ไม่ใช่รายการของ session นี้ — รอเจ้าของรายการ/ผู้จัดการมาส่ง
         let retriedAfterCatalog = false;
         for (;;) {
           try {
@@ -7119,409 +6953,21 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       const [, iter, salt, h] = stored.split('$');
       return hex(await pbkdf2(pin, unhex(salt), parseInt(iter, 10))) === h;
     }
-    return (await window.hashPin(pin)) === stored;   // รูปแบบเดิม (SHA-256) — จะถูกอัปเกรดเมื่อล็อกอินสำเร็จ
+    return (await window.hashPin(pin)) === stored;   // hash แบบ SHA-256 (ผู้ใช้ที่ยังไม่เคยล็อกอินหลังอัปเกรด) — อัปเกรดเป็น PBKDF2 เมื่อล็อกอินสำเร็จ
   };
   window.WEAK_PINS = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '1212', '2580', '0123'];
 })();
 
-// ---- boot: เตรียมคิว, ย้ายบิลเก่า, ลงทะเบียน service worker ----
+// ---- boot: เตรียมคิวซิงค์, อัปเกรดข้อมูลบิลในเครื่อง, ลงทะเบียน service worker ----
 (function () {
   db.syncQueue = db.syncQueue || [];
-  // บิลที่สร้างก่อนอัปเกรด (ไม่มีธง) ถือว่าซิงค์แล้ว — ก่อนอัปเกรดให้กดซิงค์ด้วยเวอร์ชันเดิมให้เรียบร้อยก่อน
+  // บิลในเครื่องที่ไม่มีธงซิงค์ (สร้างก่อน v1.0.0) ถือว่าซิงค์แล้ว กันส่งซ้ำ
   (db.bills || []).forEach(b => { if (!b._syncedViaRPC && !b._rpcPending) { b._syncedViaRPC = true; b._legacy = true; } });
   window.refreshSyncBadge();
   setTimeout(() => window.flushSyncQueue(), 3000);
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-})();
-</script>
-<script type="text/x-pos-app">
-// ============================================================================
-// v11 — ล็อกอินรายพนักงาน (per-employee Supabase session)
-// เปิดใช้ที่ ตั้งค่า > ร้านค้า > "ใช้บัญชีรายพนักงานบนเซิร์ฟเวอร์" (db.settings.perEmployeeAuth) — ปิดอยู่ = ทำงานแบบ v10 เดิม
-// เมื่อเปิด: ใส่ PIN ถูก (ตรวจในเครื่องก่อน เพื่อให้ออฟไลน์ใช้ได้) → ถ้าออนไลน์เรียก Edge Function `pin-login`
-// ตรวจ PIN ซ้ำฝั่งเซิร์ฟเวอร์ → ได้ session ของ "พนักงานคนนั้น" → RLS/สิทธิ์บนฐานข้อมูลมีผลรายคน
-// ============================================================================
-(function () {
-  'use strict';
-  const client = () => (window.getSupabaseClient ? window.getSupabaseClient() : null);
-  const MANAGER_ROLES = ['OWNER', 'MANAGER'];
-  const MANAGER_ONLY_OPS = ['adjust', 'receive', 'delete'];
-  const isNet = (e) => /Failed to fetch|NetworkError|Network request failed|Load failed|timeout|ERR_INTERNET/i.test(String((e && e.message) || e || '')) ||
-    (typeof navigator !== 'undefined' && navigator.onLine === false);
-
-  window._serverUser = null;           // { appUserId, role, name } ของ session ที่ใช้อยู่จริงบนเซิร์ฟเวอร์
-  let pendingLogin = null;             // { userId, pin, at } เก็บในหน่วยความจำเท่านั้น (ไม่เขียนลงดิสก์) เพื่อลองใหม่เมื่อกลับมาออนไลน์
-
-  window.isPerEmployeeAuth = function () { return !!(window.db && db.settings && db.settings.perEmployeeAuth); };
-  window.serverIsManager = function () {
-    if (!window.isPerEmployeeAuth()) return true;                 // โหมดเดิม: เครื่องใช้บัญชีเจ้าของร้านอยู่แล้ว
-    return !!window._serverUser && MANAGER_ROLES.includes(window._serverUser.role);
-  };
-
-  // รายการในคิวนี้ session ปัจจุบันส่งได้ไหม
-  //  - ผู้จัดการ/เจ้าของ: ส่งได้ทุกรายการ
-  //  - แคชเชียร์: ส่งได้เฉพาะรายการที่ตัวเองสร้าง และไม่ใช่งานของผู้จัดการ (ปรับสต็อก/รับของ/ลบ)
-  window.canFlushOp = function (op) {
-    if (!window.isPerEmployeeAuth()) return true;
-    const su = window._serverUser;
-    if (!su) return false;
-    if (MANAGER_ROLES.includes(su.role)) return true;
-    if (MANAGER_ONLY_OPS.includes(op.type)) return false;
-    return !op.by || toUUID(op.by) === su.appUserId;
-  };
-
-  async function readErrorBody(error) {
-    try { const c = error && error.context; if (c && typeof c.json === 'function') return await c.json(); } catch (e) { /* ignore */ }
-    return null;
-  }
-
-  // ---------- ล็อกอินฝั่งเซิร์ฟเวอร์ด้วย PIN ----------
-  window.serverLoginWithPin = async function (user, pin) {
-    const c = client();
-    if (!c) return { status: 'no_client' };
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return { status: 'offline' };
-    try {
-      const { data, error } = await c.functions.invoke('pin-login', { body: { user_id: toUUID(user.id), pin: String(pin) } });
-      if (error) {
-        const body = await readErrorBody(error);
-        if (body && body.error) return { status: body.error, retryAfter: body.retry_after_s, attemptsLeft: body.attempts_left };
-        return { status: isNet(error) ? 'offline' : 'error', message: error.message };
-      }
-      const { error: vErr } = await c.auth.verifyOtp({ token_hash: data.token_hash, type: 'magiclink' });
-      if (vErr) return { status: 'error', message: vErr.message };
-      window._serverUser = { appUserId: data.user.id, role: data.user.role, name: data.user.name };
-      return { status: 'ok' };
-    } catch (e) {
-      return { status: isNet(e) ? 'offline' : 'error', message: String((e && e.message) || e) };
-    }
-  };
-
-  // session ที่มีอยู่แล้ว (เช่นเจ้าของล็อกอินด้วยอีเมล/รหัสผ่านตอนตั้งค่า) → หาว่าเป็น app_user คนไหน
-  window.resolveServerUser = async function () {
-    const c = client();
-    if (!c) return null;
-    try {
-      const s = await c.auth.getSession();
-      if (!(s && s.data && s.data.session)) { window._serverUser = null; return null; }
-      const { data } = await c.from('app_users').select('id,name,role').eq('auth_user_id', s.data.session.user.id).maybeSingle();
-      window._serverUser = data ? { appUserId: data.id, role: data.role, name: data.name } : null;
-      return window._serverUser;
-    } catch (e) { return window._serverUser; }
-  };
-
-  // เรียกหลังใส่ PIN ถูกในเครื่อง (ไม่บล็อกหน้าจอ)
-  window.afterLocalLogin = async function (user, pin) {
-    window._serverUser = null; pendingLogin = null;
-    if (!window.isPerEmployeeAuth()) return;
-    const r = await window.serverLoginWithPin(user, pin);
-    if (r.status === 'ok') {
-      window.showToast && window.showToast('เชื่อมต่อเซิร์ฟเวอร์ในนาม ' + user.name);
-      window.refreshSyncBadge && window.refreshSyncBadge();
-      if (window.flushSyncQueue) await window.flushSyncQueue(true);
-    } else if (r.status === 'offline' || r.status === 'no_client') {
-      pendingLogin = { userId: user.id, pin: String(pin), at: Date.now() };   // ลองใหม่เมื่อกลับมาออนไลน์ (เก็บในหน่วยความจำ ไม่เขียนดิสก์)
-    } else if (r.status === 'locked') {
-      window.showAlert && window.showAlert('บัญชีถูกพักชั่วคราว', `ใส่ PIN ผิดหลายครั้งบนเซิร์ฟเวอร์ — ลองใหม่ได้ในอีก ${r.retryAfter || '?'} วินาที (หรือให้ผู้จัดการปลดล็อก) ใช้งานในเครื่องได้ตามปกติ แต่ข้อมูลจะยังไม่ถูกส่งขึ้นคลาวด์`, true);
-    } else if (r.status === 'invalid_credentials') {
-      window.showAlert && window.showAlert('PIN ยังไม่ตรงกับเซิร์ฟเวอร์', 'ในเครื่องนี้ PIN ถูกต้อง แต่เซิร์ฟเวอร์ไม่รู้จัก PIN นี้ (อาจเพิ่งเปลี่ยน/เพิ่มพนักงาน ให้ผู้จัดการกดซิงค์ก่อน) — ใช้งานในเครื่องได้ แต่ข้อมูลจะยังไม่ถูกส่งขึ้นคลาวด์', true);
-    } else {
-      window.showAlert && window.showAlert('เชื่อมต่อบัญชีพนักงานไม่สำเร็จ', r.message || r.status, true);
-    }
-  };
-
-  window.serverLogoutLocal = async function () {
-    window._serverUser = null; pendingLogin = null;
-    const c = client();
-    if (c && window.isPerEmployeeAuth()) { try { await c.auth.signOut({ scope: 'local' }); } catch (e) { /* ignore */ } }
-  };
-
-  window.addEventListener('online', async () => {
-    if (!pendingLogin || !window.isPerEmployeeAuth()) return;
-    if (Date.now() - pendingLogin.at > 12 * 3600 * 1000) { pendingLogin = null; return; }
-    const u = (db.users || []).find((x) => x.id === pendingLogin.userId);
-    if (!u || !db.activeUser || db.activeUser.id !== u.id) { pendingLogin = null; return; }
-    const r = await window.serverLoginWithPin(u, pendingLogin.pin);
-    if (r.status === 'ok') { pendingLogin = null; if (window.flushSyncQueue) window.flushSyncQueue(true); }
-  });
-
-  // ล็อกเครื่อง → ตัด session ของพนักงานคนนั้นทิ้ง (คนถัดไปต้องใส่ PIN ของตัวเอง)
-  const origLock = window.lockPOS;
-  if (typeof origLock === 'function') {
-    window.lockPOS = function () { const r = origLock.apply(this, arguments); window.serverLogoutLocal(); return r; };
-  }
-
-  // หลังตรวจสถานะล็อกอินร้านค้า (เจ้าของใช้อีเมล/รหัสผ่านตอนตั้งค่าเครื่อง) ให้รู้ว่าใครคือ session นี้
-  const origRefresh = window.refreshAuthStatus;
-  if (typeof origRefresh === 'function') {
-    window.refreshAuthStatus = async function () {
-      const r = await origRefresh.apply(this, arguments);
-      if (window.isPerEmployeeAuth() && !window._serverUser) await window.resolveServerUser();
-      return r;
-    };
-  }
-})();
-</script>
-<script>
-// ============================================================================
-// v11 — ที่เก็บข้อมูลแบบ IndexedDB (posStore) + ตัวโหลดแอป
-// เดิมทั้งฐานข้อมูลถูก JSON.stringify เก็บใน localStorage ก้อนเดียว (จำกัด ~5MB, เขียนทั้งก้อนทุกครั้ง)
-// ใหม่: เก็บ "ข้อมูลหลัก" (สินค้า/ลูกค้า/ตั้งค่า/คิวซิงค์ ...) เป็นระเบียนเดียวใน IndexedDB (structured clone)
-//       ส่วน "บิล" แยกเป็นรายบิล เขียนเฉพาะบิลที่เปลี่ยนจริง → บิลสะสมหลายหมื่นใบก็ไม่ช้าลง
-// IndexedDB อ่านแบบ async จึงต้องรอโหลดก่อนแล้วค่อยรันสคริปต์ของแอป (สคริปต์แอปถูกเปลี่ยนเป็น type="text/x-pos-app")
-// ============================================================================
-(function () {
-  'use strict';
-  const DB_NAME = 'pos_yojionline', DB_VERSION = 1;
-  const LS_KEY = 'pos_full_db_state', LS_LEGACY_KEY = 'pos_enterprise_state';
-  const RECENT_MS = 7 * 86400000;           // บิลใน 7 วันล่าสุดตรวจการเปลี่ยนแปลงทุกครั้งที่บันทึก; เก่ากว่านี้เขียนเมื่อถูก touchBill เท่านั้น
-  const hasIDB = typeof indexedDB !== 'undefined' && !!indexedDB;
-
-  let dbPromise = null, fallback = !hasIDB;
-  let latest = null, timer = null, running = null, again = false, cleared = false, readOnly = false;
-  const sigs = new Map();                    // billId -> ลายเซ็น JSON (บิลล่าสุด) | null (เก่า/สะอาด)
-  const touched = new Set();
-
-  const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-  const txDone = (tx) => new Promise((res, rej) => {
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-    tx.onabort = () => rej(tx.error || new Error('IndexedDB transaction aborted'));
-  });
-  function open() {
-    if (dbPromise) return dbPromise;
-    dbPromise = new Promise((res, rej) => {
-      const r = indexedDB.open(DB_NAME, DB_VERSION);
-      r.onupgradeneeded = () => {
-        const d = r.result;
-        if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
-        if (!d.objectStoreNames.contains('bills')) d.createObjectStore('bills', { keyPath: 'id' });
-      };
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-      r.onblocked = () => rej(new Error('IndexedDB ถูกบล็อก (ปิดแท็บอื่นของแอปนี้แล้วลองใหม่)'));
-    });
-    return dbPromise;
-  }
-
-  const replacer = (k, v) => (k === 'activeUser' ? undefined : v);
-  const sigOf = (b) => JSON.stringify(b);
-  const isRecent = (b) => (Date.now() - (b.time || 0)) < RECENT_MS;
-
-  function loadLegacy() {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; }
-  }
-
-  function splitDb(db) {
-    const meta = {};
-    Object.keys(db).forEach((k) => { if (k !== 'bills' && k !== 'activeUser') meta[k] = db[k]; });
-    return meta;
-  }
-
-  // เขียนสแนปช็อตลง IndexedDB: meta 1 ระเบียน + เฉพาะบิลที่เปลี่ยน/ใหม่ + ลบบิลที่หายไป
-  async function writeSnapshot(db, replaceAll) {
-    const d = await open();
-    const tx = d.transaction(['kv', 'bills'], 'readwrite');
-    const kv = tx.objectStore('kv'), bs = tx.objectStore('bills');
-    if (replaceAll) { bs.clear(); sigs.clear(); touched.clear(); }
-    const meta = splitDb(db);
-    try { kv.put(meta, 'meta'); }
-    catch (e) { kv.put(JSON.parse(JSON.stringify(meta, replacer)), 'meta'); }   // มีค่าที่ clone ไม่ได้ → แปลงผ่าน JSON
-    const seen = new Set();
-    const pendingSigs = [];
-    (db.bills || []).forEach((b) => {
-      if (!b || b.id == null) return;
-      seen.add(b.id);
-      const known = sigs.has(b.id);
-      let write = false, sg = null;
-      if (!known || touched.has(b.id)) { write = true; }
-      else if (isRecent(b)) { sg = sigOf(b); write = sg !== sigs.get(b.id); }
-      if (write) {
-        if (sg === null) sg = sigOf(b);
-        try { bs.put(b); } catch (e) { bs.put(JSON.parse(sg)); }
-        pendingSigs.push([b.id, isRecent(b) ? sg : null]);
-      }
-    });
-    sigs.forEach((_, id) => { if (!seen.has(id)) { bs.delete(id); pendingSigs.push([id, undefined]); } });
-    await txDone(tx);
-    pendingSigs.forEach(([id, sg]) => { if (sg === undefined) sigs.delete(id); else sigs.set(id, sg); });
-    touched.clear();
-  }
-
-  function primeSigs(bills) {
-    sigs.clear();
-    bills.forEach((b) => sigs.set(b.id, isRecent(b) ? sigOf(b) : null));
-  }
-
-  async function migrateLegacy(legacy) {
-    await writeSnapshot(legacy, true);
-    // เก็บสำเนาของเดิมไว้ใน IndexedDB ก่อนค่อยลบออกจาก localStorage (กันพลาด)
-    const raw = localStorage.getItem(LS_KEY);
-    const d = await open();
-    const tx = d.transaction('kv', 'readwrite');
-    if (raw) tx.objectStore('kv').put(raw, 'legacy_backup');
-    await txDone(tx);
-    try { localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_LEGACY_KEY); } catch (e) { /* ignore */ }
-  }
-
-  const api = {
-    onError: null,
-    get fallback() { return fallback; },
-    markFallback() { fallback = true; },
-
-    async load() {
-      if (fallback) return loadLegacy();
-      try {
-        const d = await open();
-        const tx = d.transaction(['kv', 'bills'], 'readonly');
-        const [meta, bills] = await Promise.all([reqP(tx.objectStore('kv').get('meta')), reqP(tx.objectStore('bills').getAll())]);
-        if (!meta) {
-          const legacy = loadLegacy();
-          if (legacy) { await migrateLegacy(legacy); primeSigs(legacy.bills || []); return legacy; }
-          return null;
-        }
-        bills.sort((a, b) => ((a.time || 0) - (b.time || 0)) || String(a.id).localeCompare(String(b.id)));
-        primeSigs(bills);
-        return Object.assign({}, meta, { bills });
-      } catch (e) {
-        console.warn('IndexedDB ใช้งานไม่ได้ — ถอยกลับไปใช้ localStorage', e);
-        fallback = true;
-        return loadLegacy();
-      }
-    },
-
-    get readOnly() { return readOnly; },
-
-    save(db) {
-      if (cleared || readOnly || !db) return;
-      latest = db;
-      if (fallback) {
-        try { localStorage.setItem(LS_KEY, JSON.stringify(db, replacer)); }
-        catch (e) { if (api.onError) api.onError(e); }
-        return;
-      }
-      clearTimeout(timer);
-      timer = setTimeout(() => { api.flush(); }, 60);
-    },
-
-    flush() {
-      clearTimeout(timer);
-      if (cleared || readOnly || fallback || !latest) return Promise.resolve();
-      if (running) { again = true; return running; }
-      running = (async () => {
-        try { await writeSnapshot(latest, false); }
-        catch (e) { if (api.onError) api.onError(e); }
-        finally {
-          running = null;
-          if (again) { again = false; api.flush(); }
-        }
-      })();
-      return running;
-    },
-
-    touchBill(id) { touched.add(id); },
-
-    async replaceAll(db) {
-      if (fallback) { localStorage.setItem(LS_KEY, JSON.stringify(db, replacer)); return; }
-      clearTimeout(timer);
-      if (running) await running;
-      await writeSnapshot(db, true);
-    },
-
-    async clear() {
-      cleared = true; clearTimeout(timer); latest = null;
-      try { localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_LEGACY_KEY); } catch (e) { /* ignore */ }
-      if (fallback) return;
-      try {
-        if (running) await running;
-        const d = await open();
-        const tx = d.transaction(['kv', 'bills'], 'readwrite');
-        tx.objectStore('kv').clear(); tx.objectStore('bills').clear();
-        await txDone(tx);
-      } catch (e) { console.warn('clear failed', e); }
-    },
-
-    // ที่เก็บ session ของ Supabase Auth (แทน localStorage) — supabase-js รองรับ storage แบบ async
-    authStorage: {
-      async getItem(k) {
-        if (fallback) return localStorage.getItem('sb:' + k);
-        const d = await open();
-        const v = await reqP(d.transaction('kv').objectStore('kv').get('auth:' + k));
-        return v == null ? null : v;
-      },
-      async setItem(k, v) {
-        if (fallback) { localStorage.setItem('sb:' + k, v); return; }
-        const d = await open();
-        const tx = d.transaction('kv', 'readwrite');
-        tx.objectStore('kv').put(String(v), 'auth:' + k);
-        await txDone(tx);
-      },
-      async removeItem(k) {
-        if (fallback) { localStorage.removeItem('sb:' + k); return; }
-        const d = await open();
-        const tx = d.transaction('kv', 'readwrite');
-        tx.objectStore('kv').delete('auth:' + k);
-        await txDone(tx);
-      }
-    }
-  };
-  window.posStore = api;
-
-  // บันทึกให้ทันก่อนปิด/ซ่อนแท็บ
-  window.addEventListener('pagehide', () => { api.flush(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') api.flush(); });
-
-  // ---------- ตัวโหลดแอป ----------
-  async function boot() {
-    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
-    let saved = null;
-    try {
-      saved = await Promise.race([
-        api.load(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('IndexedDB timeout')), 8000))
-      ]);
-    } catch (e) {
-      console.warn(e); api.markFallback(); saved = loadLegacy();
-    }
-    window.__POS_SAVED__ = saved;
-
-    // แอปเปิดซ้ำอีกแท็บ → แท็บที่สองเป็น "อ่านอย่างเดียว" (ไม่บันทึก) กันข้อมูลสองแท็บเขียนทับกัน
-    try {
-      if (navigator.locks && navigator.locks.request) {
-        await new Promise((resolve) => {
-          navigator.locks.request('pos-single-tab', { ifAvailable: true }, (lock) => {
-            if (!lock) { readOnly = true; resolve(); return undefined; }
-            resolve();
-            return new Promise(() => {});          // ถือล็อกไว้จนกว่าจะปิดแท็บ
-          });
-        });
-      }
-    } catch (e) { /* ไม่มี Web Locks: ข้าม */ }
-    if (readOnly) setTimeout(() => { alert('⚠️ แอปนี้เปิดอยู่ในอีกแท็บ/หน้าต่างหนึ่งแล้ว\n\nแท็บนี้จะ "ไม่บันทึกข้อมูล" เพื่อกันข้อมูลทับกัน — กรุณาปิดแท็บนี้แล้วใช้แท็บเดิม'); }, 500);
-
-    // สคริปต์ของแอปลงทะเบียน DOMContentLoaded/load ไว้ — ตอนนี้เหตุการณ์ผ่านไปแล้ว จึงเก็บไว้แล้วเรียกเองหลังโหลดครบ
-    const handlers = [];
-    const origDoc = document.addEventListener, origWin = window.addEventListener;
-    document.addEventListener = function (t, f, o) { if (t === 'DOMContentLoaded') { handlers.push(f); return; } return origDoc.call(this, t, f, o); };
-    window.addEventListener = function (t, f, o) { if (t === 'DOMContentLoaded' || t === 'load') { handlers.push(f); return; } return origWin.call(this, t, f, o); };
-    try {
-      document.querySelectorAll('script[type="text/x-pos-app"]').forEach((el) => {
-        const s = document.createElement('script');
-        s.textContent = el.textContent;
-        document.body.appendChild(s);
-      });
-    } finally {
-      document.addEventListener = origDoc; window.addEventListener = origWin;
-    }
-    handlers.forEach((h) => setTimeout(() => {
-      try { h.call(document, new Event('DOMContentLoaded')); } catch (e) { console.error(e); }
-    }, 0));
-  }
-  boot();
 })();
 </script>
 </body>

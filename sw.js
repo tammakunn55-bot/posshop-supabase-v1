@@ -1,6 +1,8 @@
 // Service worker: ให้แอปเปิดได้เมื่อออฟไลน์ (หน้าแอป + ไลบรารีจาก CDN ที่ล็อกเวอร์ชันไว้)
-// ไม่แคช API ของ Supabase / PromptPay — ข้อมูลธุรกรรมอยู่ใน localStorage + คิวซิงค์ของแอปอยู่แล้ว
-const VERSION = 'pos-v11-1';
+// ไม่แคช API ของ Supabase / PromptPay — ข้อมูลธุรกรรมอยู่ใน localStorage + คิวซิงค์ของแอป
+// เปลี่ยนเลข VERSION ทุกครั้งที่แก้ไฟล์แอป เพื่อให้เครื่องทุกเครื่องโหลดไฟล์ใหม่
+const VERSION = 'smart-pos-v1.0.0';
+const APP_FILES = ['./', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 const CDN = [
   'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
@@ -14,7 +16,7 @@ self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const cache = await caches.open(VERSION);
     await Promise.allSettled([
-      cache.add('./'),
+      ...APP_FILES.map((u) => cache.add(u)),
       ...CDN.map(async (u) => { const r = await fetch(u, { mode: 'no-cors' }); await cache.put(u, r); })
     ]);
     self.skipWaiting();
