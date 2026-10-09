@@ -1,6 +1,6 @@
 // Service worker: ให้แอปเปิดได้เมื่อออฟไลน์ (หน้าแอป + ไลบรารีจาก CDN ที่ล็อกเวอร์ชันไว้)
 // ไม่แคช API ของ Supabase / PromptPay — ข้อมูลธุรกรรมอยู่ใน localStorage + คิวซิงค์ของแอปอยู่แล้ว
-const VERSION = 'pos-v10-2';
+const VERSION = 'pos-v11-1';
 const CDN = [
   'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
