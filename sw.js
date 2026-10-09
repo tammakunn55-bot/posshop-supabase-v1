@@ -1,7 +1,7 @@
 // Service worker: ให้แอปเปิดได้เมื่อออฟไลน์ (หน้าแอป + ไลบรารีจาก CDN ที่ล็อกเวอร์ชันไว้)
 // ไม่แคช API ของ Supabase / PromptPay — ข้อมูลธุรกรรมอยู่ใน localStorage + คิวซิงค์ของแอป
 // เปลี่ยนเลข VERSION ทุกครั้งที่แก้ไฟล์แอป เพื่อให้เครื่องทุกเครื่องโหลดไฟล์ใหม่
-const VERSION = 'smart-pos-v1.0.0';
+const VERSION = 'smart-pos-v1.0.1';
 const APP_FILES = ['./', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 const CDN = [
   'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js',
