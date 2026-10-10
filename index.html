@@ -2,8 +2,20 @@
 <html lang="th">
   <head>
     <meta charset="UTF-8">
-    <title>Smart POS Pro V9.60 - Enterprise Edition</title>
+    <title>Smart POS Pro V9.60 - Offline Ready Edition</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="./icon.svg">
+    <style id="offline-readiness-style">
+      #offline-readiness-banner{position:sticky;top:0;z-index:25000;display:flex;align-items:center;gap:8px;padding:7px 12px;background:#dcfce7;color:#166534;font:700 12px/1.35 system-ui,sans-serif;border-bottom:1px solid #bbf7d0}
+      #offline-readiness-banner[data-state="offline"]{background:#fef3c7;color:#92400e;border-color:#fde68a}
+      #offline-readiness-banner[data-state="error"]{background:#fee2e2;color:#991b1b;border-color:#fecaca}
+      #offline-readiness-banner .offline-detail{font-weight:500;opacity:.9}
+      @media print{#offline-readiness-banner{display:none!important}}
+    </style>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script>
@@ -594,6 +606,12 @@ img, video { max-width: 100%; height: auto; }
     </style>
   </head>
   <body class="bg-slate-50 text-slate-900 min-h-screen">
+  <div id="offline-readiness-banner" role="status" aria-live="polite" data-state="online">
+    <span id="offline-status-icon">●</span>
+    <span id="offline-status-label">โหมดพร้อมใช้งาน</span>
+    <span id="offline-status-detail" class="offline-detail">ข้อมูลขายจะบันทึกในเครื่องและรอซิงก์เมื่อมีอินเทอร์เน็ต</span>
+  </div>
+
     <!-- STARTUP SPLASH -->
     <div id="sync-splash-screen" style="position:fixed;inset:0;z-index:99999;background:#4f46e5;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;font-family:'Sarabun',sans-serif;">
       <div style="width:48px;height:48px;border:4px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:sync-spin 0.8s linear infinite;"></div>
@@ -1405,10 +1423,6 @@ img, video { max-width: 100%; height: auto; }
                   <input type="checkbox" id="set-prevent-negative" class="mt-1 w-4 h-4">
                   <span><b class="text-slate-700">ป้องกันสต็อกติดลบ</b><br><span class="text-xs text-slate-500">ไม่ให้ขายเกินจำนวนคงเหลือ (ทั้งที่เครื่องและบนเซิร์ฟเวอร์) — ถ้ายังไม่ได้กรอกยอดยกมา ให้ปิดไว้ก่อน ไม่งั้นขายสินค้าที่สต็อก 0 ไม่ได้</span></span>
                 </label>
-                <label class="flex items-start gap-2 text-sm bg-indigo-50 border border-indigo-200 rounded-xl p-3 cursor-pointer">
-                  <input type="checkbox" id="set-per-employee-auth" class="mt-1 w-4 h-4">
-                  <span><b class="text-slate-700">ใช้บัญชีรายพนักงานบนเซิร์ฟเวอร์</b><br><span class="text-xs text-slate-500">ใส่ PIN แล้วเครื่องจะล็อกอิน Supabase ในนามพนักงานคนนั้น (สิทธิ์/บิล/ประวัติแยกรายคน) — ต้อง deploy Edge Function <code>pin-login</code> และรัน migration 0003 ก่อน ดู README</span></span>
-                </label>
                 <button onclick="window.saveStoreSettings()" class="py-3 px-6 bg-indigo-600 text-white font-bold rounded-xl btn-touch">บันทึกข้อมูลร้านค้า</button>
               </div>
             </div>
@@ -1718,7 +1732,7 @@ img, video { max-width: 100%; height: auto; }
     <!-- Supabase JS Client -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4"></script>
 
-    <script type="text/x-pos-app">
+    <script>
       // ==========================================
       // MASTER APPLICATION LOGIC & STATE
       // ==========================================
@@ -2102,7 +2116,7 @@ window.formatMoney = formatMoney;
         const key = window.getConfiguredSupabaseAnonKey();
         if (!url || !key) return null;
         if (typeof window.supabase !== 'undefined' && window.supabase.createClient) {
-          _supabaseClient = window.supabase.createClient(url, key, { auth: { storage: window.posStore.authStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
+          _supabaseClient = window.supabase.createClient(url, key);
         }
         return _supabaseClient;
       };
@@ -2200,42 +2214,18 @@ window.formatMoney = formatMoney;
         const client = window.getSupabaseClient();
         if (!client) return;
         try {
-          const { data: sessionData, error: sessionError } = await client.auth.getSession();
-          if (sessionError || !sessionData?.session?.user) return;
-
-          // First ask the SECURITY DEFINER RPC. A valid existing owner may not be visible
-          // through a direct app_users SELECT because of RLS; do not mistake that for no owner.
-          const { data: ownerResult, error: ownerCheckError } = await client.rpc('is_owner');
-          if (ownerCheckError) {
-            console.warn('ตรวจสอบ OWNER ไม่สำเร็จ จึงไม่เปิดหน้าสร้าง OWNER ซ้ำ:', ownerCheckError.message);
-            return; // fail closed: a failed check must never trigger owner creation
-          }
-          if (ownerResult === true) {
-            // The signed-in account is already the owner. Also prevent the first-launch wizard
-            // from asking for store name/PIN again on this device.
-            if (window.db) {
-              db.setupWizardDone = true;
-              window.persist?.();
-            }
-            const wizard = document.getElementById('modal-setup-wizard');
-            wizard?.classList.add('hidden');
-            wizard?.classList.remove('flex');
-            return;
-          }
-
-          // Only show the bootstrap form after a successful direct lookup confirms that this
-          // auth user has no app_users row. If SELECT is blocked by RLS/GRANT, do not guess.
-          const { data: existing, error: lookupError } = await client
-            .from('app_users').select('id').eq('auth_user_id', sessionData.session.user.id).maybeSingle();
-          if (lookupError || existing) return;
+          const { data: { session } } = await client.auth.getSession();
+          if (!session?.user) return;
+          const { data: existing } = await client.from('app_users').select('id').eq('auth_user_id', session.user.id).maybeSingle();
+          if (existing) return; // already bootstrapped on a previous sign-in
 
           document.getElementById('bootstrap-owner-name').value = db.storeName || '';
           document.getElementById('bootstrap-owner-pin').value = '';
           document.getElementById('modal-bootstrap-owner').classList.remove('hidden');
           document.getElementById('modal-bootstrap-owner').classList.add('flex');
         } catch (e) {
-          // Do not show bootstrap when the status check fails; this prevents a false setup loop.
-          console.warn('ตรวจสอบสถานะ OWNER ไม่สำเร็จ:', e?.message || e);
+          // RLS hides app_users entirely from a not-yet-bootstrapped session, so this SELECT
+          // failing/returning nothing is expected and not itself an error worth surfacing.
         }
       };
 
@@ -2322,7 +2312,6 @@ window.formatMoney = formatMoney;
       window._syncProductsImpl = async function(isQuiet = false) {
         const client = window.getSupabaseClient();
         if (!client) return false;
-          if (!window.serverIsManager()) return true;   // แคตตาล็อก/ลูกค้า/พนักงาน: ผู้จัดการขึ้นไปเท่านั้นที่ซิงค์ขึ้นได้ (RLS บังคับอยู่แล้ว)
 
         try {
           // 1. Categories
@@ -2543,7 +2532,6 @@ window.formatMoney = formatMoney;
             const { error: shiftErr } = await client.from('shifts').upsert(shiftRows, { onConflict: 'id' });
             if (shiftErr) throw shiftErr;
           }
-          if (!window.serverIsManager()) { window.updateSupabaseBadge?.(true); return true; }   // แคชเชียร์ส่งได้แค่กะ — ที่เหลือเป็นงานผู้จัดการ
 
           // 2. Bills — (v10) ไม่เขียนบิลตรงเข้าตารางอีกต่อไป: บิลทั้งหมดไปทาง create_sale (คิวซิงค์) เท่านั้น
           //    เพื่อให้เซิร์ฟเวอร์ตรวจสต็อก/วงเงิน/ส่วนลดเสมอ ไม่มี fallback ที่ข้ามกฎได้
@@ -2638,7 +2626,6 @@ window.formatMoney = formatMoney;
           // เรียกซ้ำแบบไม่ quiet (isQuiet=false) เฉพาะตัวที่ล้มเหลว เพื่อให้ error จริงเด้งให้เห็น
           const _ver = await window.checkServerSchema();
           if (_ver !== null && _ver < 2) throw new Error('ฐานข้อมูลบนเซิร์ฟเวอร์ยังเป็นเวอร์ชันเก่า — ต้องรัน supabase/migrations/0002_fixes.sql ก่อน');
-          if (window.isPerEmployeeAuth() && !window._serverUser) await window.resolveServerUser();
           window.retryFailedSyncOps();   // กดซิงค์เองถือว่าสั่งลองส่งรายการที่เคยล้มเหลวใหม่
           const res1 = await window.syncProductsToSupabase(true);
           const res2 = await window.syncTransactionsToSupabase(true);
@@ -3315,7 +3302,7 @@ window.formatMoney = formatMoney;
       window.currentCartTotal = function() { return window.calcCartTotals(cart, document.getElementById('cart-discount-input')?.value, document.getElementById('cart-discount-type')?.value).grandTotal; };
       window.getAutoSku = function() { return getRunningDocNumber('SKU', 'lastSKUDate', 'dailySKUNum'); };
 
-      window.processPaymentRequest = function() {
+      window.processPaymentRequest = async function() {
         if (cart.length === 0) return alert("ตะกร้าสินค้าว่างเปล่า");
 
         const grandTotalStr = String(window.currentCartTotal());
@@ -3395,16 +3382,26 @@ window.formatMoney = formatMoney;
         // so nothing carries over ("ค้าง") into the next sale.
         window.resetCartState();
         window.closeModal('modal-cart');
-        window.persist?.(); // save the completed sale locally right away (offline-safe)
-        window.showToast("บันทึกการขายสำเร็จ!");
+        // Put the operation into the durable queue before displaying a success message or
+        // allowing the queue runner to send it. The stable bill ID is the idempotency reference.
+        window.enqueueSync({ type: 'sale', payload: { billId: bill.id } }, true);
+        let durableResult = null;
+        try {
+          durableResult = await window.persistDurably();
+        } catch (e) {
+          console.error('Durable sale save failed', e);
+        }
         window.renderReceipt(bill);
-
-        // Best-effort authoritative write to Supabase via the atomic RPC (create_sale):
-        // re-checks credit limit, re-deducts stock with row locking, and records unit_cost server-side.
-        // Runs in the background so the cashier flow above never blocks on network; if it's offline or
-        // unconfigured this silently no-ops and the periodic/forced sync (syncTransactionsToSupabase)
-        // remains the offline fallback described in the manual.
-        window.enqueueSync({ type: 'sale', payload: { billId: bill.id } });
+        if (!durableResult || !durableResult.ok) {
+          window.showAlert?.('⚠️ ต้องตรวจสอบการบันทึก', 'บิลนี้อยู่ในหน่วยความจำของแอป แต่การบันทึกลงเครื่องไม่สำเร็จ อย่าปิดหรือรีโหลดหน้านี้จนกว่าจะเชื่อมต่อและซิงก์ขึ้น Supabase สำเร็จ', true);
+          return;
+        }
+        if (durableResult.warning) {
+          window.showAlert?.('บันทึกในเครื่องได้ แต่สำรองไม่ครบ', 'รายการขายถูกเก็บใน localStorage แล้ว แต่ IndexedDB สำรองไม่สำเร็จ ควรเชื่อมต่ออินเทอร์เน็ตและตรวจว่าซิงก์ขึ้น Supabase สำเร็จก่อนปิดแอป', true);
+        } else {
+          window.showToast('บันทึกบิลในเครื่องแล้ว — กำลังรอซิงก์ขึ้นคลาวด์');
+        }
+        window.flushSyncQueue?.().catch(e => console.warn('Sale sync deferred:', errMsg(e)));
       };
 
       // (v10) การส่งบิลขึ้นเซิร์ฟเวอร์ย้ายไปที่คิวซิงค์ — ดู window.enqueueSync / runSale ในโมดูล v10 ท้ายไฟล์
@@ -4290,7 +4287,6 @@ window.formatMoney = formatMoney;
         document.getElementById('set-promptpay').value = db.promptPayId;
         document.getElementById('set-tax-id').value = db.taxId || '';
         const _pn = document.getElementById('set-prevent-negative'); if (_pn) _pn.checked = !!(db.settings && db.settings.preventNegativeStock);
-        const _pe = document.getElementById('set-per-employee-auth'); if (_pe) _pe.checked = !!(db.settings && db.settings.perEmployeeAuth);
         document.getElementById('set-supabase-url').value = window.getConfiguredSupabaseUrl();
         document.getElementById('set-supabase-key').value = window.getConfiguredSupabaseAnonKey();
 
@@ -4325,7 +4321,6 @@ window.formatMoney = formatMoney;
         db.taxId = document.getElementById('set-tax-id').value.trim();
         db.settings = db.settings || {};
         db.settings.preventNegativeStock = !!document.getElementById('set-prevent-negative')?.checked;
-        db.settings.perEmployeeAuth = !!document.getElementById('set-per-employee-auth')?.checked;
         document.getElementById('store-name-title').innerText = db.storeName;
         window.persist?.();
         window.showToast?.("บันทึกข้อมูลร้านค้าเรียบร้อยแล้ว");
@@ -4824,7 +4819,9 @@ window.formatMoney = formatMoney;
             variant_id: item.variantId || null,
             fraction_id: item.fractionId || null,
             quantity: returnQty,
-            unit_price: item.price
+            // Send the actual refunded unit price after the original bill discount ratio,
+            // so the server-side refund total matches the amount shown to the cashier.
+            unit_price: roundAmt(item.price * _ratio)
           });
         });
 
@@ -4833,7 +4830,6 @@ window.formatMoney = formatMoney;
 
         const fullyReturned = bill.items.every(item => roundStock(item.returnedQty || 0) >= roundStock(item.qty));
         bill.isRefunded = fullyReturned;
-        window.posStore?.touchBill(bill.id);   // v11: บิลเก่ากว่า 7 วันถูกแก้ ต้องสั่งให้เขียนใหม่
 
         db.returns = db.returns || [];
         const creditNoteNo = window.getCreditNoteNumber();
@@ -4863,7 +4859,7 @@ window.formatMoney = formatMoney;
         // ก็ยังถูกต้องในเครื่องเหมือนเดิม แค่รอ sync รอบถัดไปไม่ได้ (ไม่มี batch fallback สำหรับ
         // การคืนสินค้าในตอนนี้ เพราะต้องรู้ bill server-side id ก่อน — ปล่อยให้กดซิงค์ใหม่ได้จาก
         // ปุ่ม forceSyncNow ถ้าพลาดจริง)
-        window.enqueueSync({ type: 'return', payload: { billId: bill.id, items: rpcItems.map(i => ({ variant_id: i.variant_id, fraction_id: i.fraction_id, quantity: i.quantity })), restock: _restock, returnRef: creditNoteNo, shiftId: db.currentShift?.id || null, isCredit, customerId: bill.customerId, refund: refundTotal, fully: fullyReturned } });
+        window.enqueueSync({ type: 'return', payload: { billId: bill.id, items: rpcItems.map(i => ({ variant_id: i.variant_id, fraction_id: i.fraction_id, quantity: i.quantity, unit_price: i.unit_price })), restock: _restock, returnRef: creditNoteNo, shiftId: db.currentShift?.id || null, isCredit, customerId: bill.customerId, refund: refundTotal, fully: fullyReturned } });
       };
 
       window.syncReturnToSupabaseRPC = function() { /* v10: ใช้คิวซิงค์ (type 'return') แทน */ };
@@ -4936,7 +4932,7 @@ window.formatMoney = formatMoney;
       });
     </script>
   
-<script type="text/x-pos-app">
+<script>
 /* Smart POS Pro V9.60 SQL Schema Compatibility Bridge */
 (function(){
   window.SQL_SCHEMA_VERSION='Smart_POS_Pro_Enterprise_Full_Database_Schema';
@@ -4989,7 +4985,6 @@ window.formatMoney = formatMoney;
   // matches existing local products/customers by SKU/phone so their local id — and any
   // in-progress local edits to stock — are preserved rather than overwritten.
   window.loadDatabaseState=async function(silent){
-    if (window.isPerEmployeeAuth?.() && !window.serverIsManager?.()) return window.showAlert?.('เฉพาะผู้จัดการ','การดึงข้อมูลจากคลาวด์ทำได้เฉพาะผู้จัดการ/เจ้าของ (แคชเชียร์ไม่มีสิทธิ์อ่านต้นทุน/สต็อกทั้งหมด)',true);
     const c=sb(); if(!c) return false;
     // Run each table fetch independently (allSettled, not all) so a problem with one table
     // — e.g. a bad embedded-relationship query — doesn't block every other table from loading,
@@ -4999,7 +4994,7 @@ window.formatMoney = formatMoney;
       categories:q('categories',x=>x.select('*').order('display_order')),
       products:q('products',x=>x.select('*').eq('is_active',true).order('name')),
       product_categories:q('product_categories',x=>x.select('*')),
-      product_variants:q('product_variants',x=>x.select('*').eq('is_active',true)),
+      product_variants:q('product_variants_view',x=>x.select('*').eq('is_active',true)),
       product_fractions:q('product_fractions',x=>x.select('*')),
       customers:q('customers',x=>x.select('*').eq('is_active',true).order('name')),
       bills:q('bills',x=>x.select('*, bill_items(*)').order('created_at',{ascending:false}).limit(1000))
@@ -5278,7 +5273,7 @@ window.formatMoney = formatMoney;
 </div>
 
 
-<script type="text/x-pos-app">
+<script>
 /* Enterprise Management Repair Layer */
 (function(){
 const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -5298,34 +5293,82 @@ window.ensure = ensure; // เพิ่มขึ้นมา: ให้สคร
 // สำเร็จ" ตามปกติ ทั้งที่ข้อมูลไม่ถูกเขียนลงเครื่องเลยจริงๆ — เพิ่ม throttle กันเด้งซ้ำถี่เกินไป
 // (ครั้งต่อไปห่างกันอย่างน้อย 10 วิ) แล้วโชว์ alert ที่มองเห็นได้จริงแทน
 let _persistFailAlertAt = 0;
+const OFFLINE_IDB_NAME='smart-pos-offline-v2';
+const OFFLINE_IDB_STORE='snapshots';
+let _offlineIdb=null;
+function openOfflineIdb(){
+  if(!('indexedDB' in window)) return Promise.reject(new Error('IndexedDB is not supported'));
+  if(_offlineIdb) return _offlineIdb;
+  _offlineIdb=new Promise((resolve,reject)=>{
+    const req=indexedDB.open(OFFLINE_IDB_NAME,1);
+    req.onupgradeneeded=()=>{const d=req.result;if(!d.objectStoreNames.contains(OFFLINE_IDB_STORE))d.createObjectStore(OFFLINE_IDB_STORE);};
+    req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB open failed'));
+  });
+  return _offlineIdb;
+}
+function idbPutSnapshot(serialized){
+  return openOfflineIdb().then(d=>new Promise((resolve,reject)=>{
+    const tx=d.transaction(OFFLINE_IDB_STORE,'readwrite');
+    tx.objectStore(OFFLINE_IDB_STORE).put({serialized,savedAt:Date.now()},'main');
+    tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'));
+  }));
+}
+function idbGetSnapshot(){
+  return openOfflineIdb().then(d=>new Promise((resolve,reject)=>{
+    const tx=d.transaction(OFFLINE_IDB_STORE,'readonly'),req=tx.objectStore(OFFLINE_IDB_STORE).get('main');
+    req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error||new Error('IndexedDB read failed'));
+  }));
+}
+// Awaitable durability barrier for money/stock transactions. A sale is not reported as safely
+// saved until at least one local store accepted the complete state including its sync queue.
+window.persistDurably = async function(){
+  const serialized=JSON.stringify(db,(k,v)=>k==='activeUser'?undefined:v);
+  let localOk=false, idbOk=false;
+  try{localStorage.setItem('pos_full_db_state',serialized);localOk=true;}catch(e){console.warn('localStorage durable write failed',e);}
+  try{await idbPutSnapshot(serialized);idbOk=true;}catch(e){console.warn('IndexedDB durable write failed',e);}
+  return {ok:localOk||idbOk, localStorage:localOk, indexedDB:idbOk, warning:!idbOk};
+};
 function persist(){
+  let serialized='';
   try{
-    window.posStore.save(db);   // v11: IndexedDB (เขียนแบบ debounce, บิลเขียนเฉพาะที่เปลี่ยน)
+    serialized=JSON.stringify(db,(k,v)=>k==='activeUser'?undefined:v);
+    localStorage.setItem('pos_full_db_state',serialized);
   }catch(e){
-    console.warn('persist failed (localStorage full or blocked)',e);
-    const now = Date.now();
-    if (now - _persistFailAlertAt > 10000) {
-      _persistFailAlertAt = now;
-      window.showAlert
-        ? window.showAlert('⚠️ บันทึกข้อมูลไม่สำเร็จ', 'พื้นที่จัดเก็บข้อมูลในเครื่องเต็ม หรือถูกบล็อก — ข้อมูลล่าสุดอาจไม่ถูกบันทึก กรุณาลบรูปภาพ/ข้อมูลเก่าที่ไม่ใช้แล้ว หรือสำรองข้อมูลด่วน', true)
-        : alert('⚠️ บันทึกข้อมูลไม่สำเร็จ: พื้นที่จัดเก็บข้อมูลในเครื่องเต็มหรือถูกบล็อก');
-    }
+    console.warn('localStorage persist failed; IndexedDB backup will be attempted',e);
+  }
+  if(serialized){
+    idbPutSnapshot(serialized).catch(e=>{
+      console.warn('IndexedDB snapshot failed',e);
+      const now=Date.now();
+      if(now-_persistFailAlertAt>10000){_persistFailAlertAt=now;window.showAlert
+        ?window.showAlert('⚠️ สำรองข้อมูลออฟไลน์ไม่สำเร็จ','พื้นที่จัดเก็บในเครื่องอาจเต็มหรือถูกบล็อก ข้อมูลล่าสุดอาจไม่ปลอดภัย กรุณาซิงก์ขึ้น Supabase และสำรองข้อมูล',true)
+        :alert('⚠️ สำรองข้อมูลออฟไลน์ไม่สำเร็จ กรุณาซิงก์และสำรองข้อมูล');}
+    });
+  }else{
+    const now=Date.now();
+    if(now-_persistFailAlertAt>10000){_persistFailAlertAt=now;window.showAlert
+      ?window.showAlert('⚠️ บันทึกข้อมูลไม่สำเร็จ','ไม่สามารถแปลงข้อมูลเพื่อบันทึกได้ กรุณาหยุดทำรายการและสำรองข้อมูล',true)
+      :alert('⚠️ บันทึกข้อมูลไม่สำเร็จ กรุณาสำรองข้อมูล');}
   }
 }
 try{
-  const saved=window.__POS_SAVED__||null;   // v11: ตัวโหลด (IndexedDB) อ่านไว้ให้ก่อนรันสคริปต์ของแอป
+  const saved=JSON.parse(localStorage.getItem('pos_full_db_state')||'null');
   if(saved){ Object.assign(window.db||{}, saved); if(window.db)window.db.activeUser=null; }
-  else { // migrate any older partial save so existing installs don't lose their data
+  else {
     Object.assign(window.db||{}, JSON.parse(localStorage.getItem('pos_enterprise_state')||'{}'));
+    // Recover the last durable snapshot when localStorage was cleared/evicted.
+    // Recovery is guarded against overwriting newer local state.
+    window.__offlineRestorePromise=idbGetSnapshot().then(snapshot=>{
+      if(!snapshot||localStorage.getItem('pos_full_db_state')) return false;
+      const recovered=JSON.parse(snapshot.serialized||'null');if(!recovered)return false;
+      Object.assign(window.db||{},recovered);if(window.db)window.db.activeUser=null;
+      try{localStorage.setItem('pos_full_db_state',snapshot.serialized);}catch(e){}
+      setTimeout(()=>{window.persist?.();window.renderProducts?.();window.renderStockTable?.();window.renderSalesHistory?.();window.smartPOSOfflineStatus?.refresh?.();},0);
+      console.warn('Recovered Smart POS state from IndexedDB snapshot');return true;
+    }).catch(e=>{console.warn('Offline snapshot recovery unavailable',e);return false;});
   }
-}catch(e){}
+}catch(e){console.warn('Local state restore failed',e);}
 window.persist=persist;
-window.posStore.onError=function(e){   // เขียน IndexedDB ไม่สำเร็จ (พื้นที่เต็ม/ถูกบล็อก) — ต้องให้ผู้ใช้เห็นจริง ไม่ใช่เงียบ
-  console.warn('persist failed',e);
-  const now=Date.now();
-  if(now-_persistFailAlertAt>10000){_persistFailAlertAt=now;
-    window.showAlert?window.showAlert('⚠️ บันทึกข้อมูลไม่สำเร็จ','พื้นที่จัดเก็บข้อมูลในเครื่องเต็ม หรือถูกบล็อก — ข้อมูลล่าสุดอาจไม่ถูกบันทึก กรุณาสำรองข้อมูลด่วน',true):alert('⚠️ บันทึกข้อมูลไม่สำเร็จ');}
-};
 window.canDo=p=>{ensure();const u=db.activeUser||((db.users||[]).some(x=>x.pinHash)?null:db.users.find(x=>x.role==='OWNER'));return !!u&&(u.role==='OWNER'||u.permissions?.includes('ALL')||u.permissions?.includes(p));};
 const ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
 ensure();
@@ -5334,7 +5377,7 @@ window.openUserManagerModal=window.switchSettingsTab?()=>window.switchSettingsTa
 window.renderUserManagerList=function(){ensure();const c=document.getElementById('user-manager-list');if(!c)return;c.innerHTML=db.users.map(u=>`<div class="bg-slate-50 p-3 rounded-xl border flex justify-between"><div><b>${esc(u.name)}</b><span class="block text-[10px] text-indigo-600">${u.role==='OWNER'?'เจ้าของร้าน':u.role==='MANAGER'?'ผู้จัดการ':'พนักงานขาย'}</span></div><div class="flex gap-2"><button onclick="window.editUser('${u.id}')" class="text-indigo-600 font-bold">แก้ไข</button>${u.role==='OWNER'?'<span class="text-slate-400 text-[10px]">ป้องกันลบ</span>':`<button onclick="window.deleteUser('${u.id}')" class="text-rose-500 font-bold">ลบ</button>`}</div></div>`).join('');};
 // NOTE: the PIN input is intentionally left blank when editing — pin_hash cannot be reversed
 // back into the original PIN, so re-entering it is only required when actually changing it.
-window.editUser=id=>{const u=db.users.find(x=>x.id===id);if(!u)return;document.getElementById('edit-user-id').value=id;document.getElementById('user-name-input').value=u.name;document.getElementById('user-pin-input').value='';document.getElementById('user-pin-input').placeholder='ใส่ PIN ใหม่ (เว้นว่างไว้ถ้าไม่เปลี่ยน)';let r=document.getElementById('user-role-input');if(!r){r=document.createElement('select');r.id='user-role-input';r.className='w-full border p-2 rounded-xl text-xs';r.innerHTML='<option value="CASHIER">พนักงานขาย</option><option value="MANAGER">ผู้จัดการ</option><option value="OWNER">เจ้าของร้าน</option>';document.getElementById('user-pin-input').insertAdjacentElement('afterend',r);}r.value=u.role;};
+window.editUser=id=>{const u=db.users.find(x=>x.id===id);if(!u)return;document.getElementById('edit-user-id').value=id;document.getElementById('user-name-input').value=u.name;document.getElementById('user-pin-input').value='';document.getElementById('user-pin-input').placeholder='ใส่ PIN ใหม่ (เว้นว่างไว้ถ้าไม่เปลี่ยน)';const r=document.getElementById('user-role-input');if(!r)return window.showAlert?.('ผิดพลาด','ไม่พบช่องกำหนดบทบาทผู้ใช้',true);r.value=u.role;};
 // BUG FIX (security): PINs were stored and would have been synced to Supabase as plaintext —
 // anyone with the anon key could read every employee's PIN straight out of the database.
 // Now only a SHA-256 hash (window.hashPin) is ever stored in db.users[].pinHash / sent as
@@ -5439,7 +5482,6 @@ let _pinFails = {}, _pinSetupFirst = null;
     window.resetIdleTimer?.();
     window.updateActiveUserBadge?.();
     window.showToast?.(`สวัสดี ${u.name} 👋`);
-    window.afterLocalLogin?.(u, pin);   // v11: ล็อกอินบัญชีรายพนักงานบนเซิร์ฟเวอร์ (ถ้าเปิดใช้) ไม่บล็อกหน้าจอ
     if (weak) window.showAlert?.('⚠️ PIN เดาง่าย', 'บัญชีนี้ใช้ PIN ที่เดาง่าย กรุณาเปลี่ยนที่ ตั้งค่า > ผู้ใช้งาน', true);
   };
 
@@ -5988,7 +6030,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    SHIFT / CASH DRAWER MANAGEMENT (เปิด-ปิดร้าน, เงินทอนเริ่มต้น, เงินเข้า-ออกลิ้นชัก,
    รายงานสรุปยอดปิดร้าน) — previously referenced throughout the Supabase sync layer
@@ -6211,7 +6253,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    PRODUCT EXPORT — Excel table with clickable image links (labelled with the product
    name instead of a raw URL) and a ZIP download of the actual image files renamed to
@@ -6351,7 +6393,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    DATA HEALTH CHECK (ตรวจสุขภาพข้อมูล) — สแกนหาความผิดปกติทั้งในเครื่องและบน Supabase
    Storage แล้วรายงานให้ดู ไม่แก้อะไรให้อัตโนมัติ (ป้องกันลบ/แก้ข้อมูลผิดโดยไม่ตั้งใจ)
@@ -6398,7 +6440,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
   // onclick กันปัญหาอักขระพิเศษในชื่อไฟล์ทำให้ HTML/JS พัง)
   function orphanImageCard(title, files){
     window._orphanImages = files.slice();
-    if (!files.length) return `<div class="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl p-3 text-center text-[11px] font-bold" id="orphan-images-card">✅ ลบรูปกำพร้าหมดแล้ว</div>`;
+    if (!files.length) return `<div class="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl p-3 text-center text-[11px] font-bold" id="orphan-images-empty">✅ ลบรูปกำพร้าหมดแล้ว</div>`;
     const rows = files.map((name, idx) => `
       <div class="flex items-center justify-between gap-2 bg-white border rounded-lg px-2 py-1.5">
         <span class="text-[10px] text-slate-600 break-all flex-1">${esc3(name)}</span>
@@ -6571,7 +6613,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    FIRST-LAUNCH SETUP WIZARD
    เด้งอัตโนมัติตอนเปิดแอปครั้งแรก (db.setupWizardDone ยังไม่ true) คุมลำดับขั้นตอนที่ถูกต้อง:
@@ -6585,33 +6627,8 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       .forEach(s => document.getElementById(s)?.classList.toggle('hidden', s !== id));
   }
 
-  window.maybeShowSetupWizard = async function(){
+  window.maybeShowSetupWizard = function(){
     window.ensure?.(); // ให้แน่ใจว่า db.users มี default owner แล้วก่อนเช็ค
-    if (db.setupWizardDone) return;
-
-    // On a device that already has a valid Supabase OWNER session, skip the local first-run
-    // wizard. Its name/PIN setup is only for a genuinely new local installation.
-    try {
-      const client = window.getSupabaseClient?.();
-      if (client) {
-        const { data: sessionData, error: sessionError } = await client.auth.getSession();
-        if (!sessionError && sessionData?.session?.user) {
-          const { data: isOwner, error: ownerError } = await client.rpc('is_owner');
-          if (!ownerError && isOwner === true) {
-            db.setupWizardDone = true;
-            window.persist?.();
-            const existingModal = document.getElementById('modal-setup-wizard');
-            existingModal?.classList.add('hidden');
-            existingModal?.classList.remove('flex');
-            return;
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('ตรวจสอบ OWNER ก่อนเปิด setup wizard ไม่สำเร็จ:', e?.message || e);
-    }
-
-    // Re-check in case another async initialization completed while the owner check ran.
     if (db.setupWizardDone) return;
     showStep('wizard-step-welcome');
     document.getElementById('wizard-store-name').value = db.storeName || '';
@@ -6672,7 +6689,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 })();
 </script>
 
-<script type="text/x-pos-app">
+<script>
 /* ==========================================
    BACKUP / RESTORE / FACTORY RESET
    ทั้งสามฟังก์ชันทำงานกับ localStorage โดยตรงแล้วสั่ง location.reload() ให้แอปโหลดสถานะใหม่
@@ -6718,7 +6735,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async function(){
+    reader.onload = function(){
       let parsed;
       try {
         parsed = JSON.parse(reader.result);
@@ -6743,8 +6760,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       if (!sure) return;
 
       try {
-        await window.posStore.replaceAll(payload);   // v11: เขียนลง IndexedDB
-        localStorage.removeItem(DB_KEY);
+        localStorage.setItem(DB_KEY, JSON.stringify(payload));
         localStorage.removeItem(LEGACY_DB_KEY); // กันโหลดผิดคีย์เก่าทับของที่เพิ่งกู้คืนมา
         window.showToast?.('กู้คืนข้อมูลสำเร็จ — กำลังโหลดแอปใหม่...');
         setTimeout(() => location.reload(), 800);
@@ -6781,10 +6797,8 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       // รวมถึงการตั้งค่าเชื่อมต่อ Supabase ด้วย เพราะถ้าจะส่งต่อเครื่องให้ร้านอื่นแล้วยังต่อฐานข้อมูล
       // เดิมค้างอยู่ ร้านใหม่จะดันไปดึง/ส่งข้อมูลชนกับร้านเก่าทันทีที่เปิดแอป
       [DB_KEY, LEGACY_DB_KEY, 'pos_products_grid_cols', 'pos_products_per_page', 'pos_supabase_url', 'pos_supabase_anon_key'].forEach(k => localStorage.removeItem(k));
-      window.posStore.clear().catch(() => {}).finally(() => {   // v11: ล้าง IndexedDB ด้วย
-        window.showToast?.('ล้างข้อมูลเรียบร้อย — กำลังเริ่มต้นใหม่...');
-        setTimeout(() => location.reload(), 600);
-      });
+      window.showToast?.('ล้างข้อมูลเรียบร้อย — กำลังเริ่มต้นใหม่...');
+      setTimeout(() => location.reload(), 600);
     } catch (e) {
       console.error('factory reset failed', e);
       window.showAlert?.('ล้างข้อมูลไม่สำเร็จ', String(e.message || e), true);
@@ -6792,7 +6806,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
   };
 })();
 </script>
-<script type="text/x-pos-app">
+<script>
 // ============================================================================
 // v10 — คิวซิงค์ (sync queue), ค่าตั้งต้นสต็อก/หนี้ (seeding), PIN แบบใหม่
 // แก้ตามรายงานตรวจสอบ: ไม่มี "fallback เขียนบิลตรง" อีกต่อไป ทุกธุรกรรมไปทาง RPC บนเซิร์ฟเวอร์
@@ -6856,7 +6870,6 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     db.syncQueue = db.syncQueue || [];
     op.id = op.id || ('Q-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
     op.status = 'pending'; op.tries = 0; op.createdAt = Date.now();
-    op.by = (window.db && db.activeUser && db.activeUser.id) || null;   // ใครเป็นผู้สร้างรายการ (ใช้ตัดสินว่าใครส่งได้)
     db.syncQueue.push(op);
     if (window.persist) window.persist();
     window.refreshSyncBadge();
@@ -6889,7 +6902,6 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
   // ---------- ตัวช่วยบนเซิร์ฟเวอร์ ----------
   async function ensureUser(c, uid) {
     if (!uid) return;
-    if (window.isPerEmployeeAuth && window.isPerEmployeeAuth()) return;   // โหมดรายพนักงาน: แถวพนักงานถูกจัดการโดยผู้จัดการ/เจ้าของเท่านั้น
     const u = (db.users || []).find(x => x.id === uid);
     if (u && u.pinHash) {
       const { error } = await c.from('app_users').upsert(
@@ -6920,7 +6932,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     const { error } = await c.from('customers').upsert([{
       id: toUUID(cu.id), name: cu.name, phone: cu.phone || null, address: cu.address || '',
       credit_limit: roundAmt(cu.creditLimit ?? 50000)
-    }], { onConflict: 'id', ignoreDuplicates: !!(window.isPerEmployeeAuth && window.isPerEmployeeAuth() && window.serverIsManager && !window.serverIsManager()) });   // แคชเชียร์เพิ่มลูกค้าใหม่ได้ แต่ไม่ทับวงเงินที่ผู้จัดการตั้งไว้
+    }], { onConflict: 'id' });
     if (error) throw error;
     await window._seedDebts(c, [cu]);
   }
@@ -7015,7 +7027,6 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     });
     if (error) throw error;
     bill._syncedViaRPC = true; delete bill._rpcPending;
-    if (window.posStore) window.posStore.touchBill(bill.id);
     bill._serverBillId = (data && data.bill_id) || null;
   }
 
@@ -7029,7 +7040,8 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
       p_items: (p.items || []).map(i => ({
         variant_id: i.variant_id ? toUUID(i.variant_id) : null,
         fraction_id: i.fraction_id ? toUUID(i.fraction_id) : null,
-        quantity: +i.quantity || 0
+        quantity: +i.quantity || 0,
+        unit_price: +i.unit_price || 0
       })),
       p_full_return: !!p.fully, p_return_ref: p.returnRef,
       p_shift_id: p.shiftId ? toUUID(p.shiftId) : null
@@ -7088,18 +7100,17 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
   window.flushSyncQueue = function (quiet) {
     if (flushing) return flushing;
     flushing = (async () => {
+      // Avoid auth/network calls while the browser reports offline. Keep every op queued.
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return window.syncQueueStats();
       const c = client();
       if (!c) return window.syncQueueStats();
-      const sess = await c.auth.getSession();
+      let sess;
+      try { sess = await c.auth.getSession(); }
+      catch (e) { if (isNetworkError(e)) return window.syncQueueStats(); throw e; }
       if (!(sess && sess.data && sess.data.session)) return window.syncQueueStats();
-      if (window.isPerEmployeeAuth && window.isPerEmployeeAuth() && !window._serverUser) {
-        if (window.resolveServerUser) await window.resolveServerUser();
-        if (!window._serverUser) return window.syncQueueStats();
-      }
       db.syncQueue = db.syncQueue || [];
       for (const op of db.syncQueue.slice()) {
         if (op.status === 'failed') continue;
-        if (window.canFlushOp && !window.canFlushOp(op)) continue;   // ไม่ใช่รายการของ session นี้ — รอเจ้าของรายการ/ผู้จัดการมาส่ง
         let retriedAfterCatalog = false;
         for (;;) {
           try {
@@ -7143,7 +7154,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
 
   // ลองส่งเมื่อกลับมาออนไลน์ และทุก 60 วินาที
   window.addEventListener('online', () => window.flushSyncQueue());
-  setInterval(() => { if ((db.syncQueue || []).some(o => o.status !== 'failed')) window.flushSyncQueue(); }, 60000);
+  setInterval(() => { if (navigator.onLine !== false && (db.syncQueue || []).some(o => o.status !== 'failed')) window.flushSyncQueue().catch(e => console.warn('Background sync deferred:', errMsg(e))); }, 60000);
 
   // ---------- PIN: PBKDF2 + salt, จำกัดจำนวนครั้งที่ลองผิด ----------
   const hex = (u8) => Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -7180,398 +7191,74 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
   (db.bills || []).forEach(b => { if (!b._syncedViaRPC && !b._rpcPending) { b._syncedViaRPC = true; b._legacy = true; } });
   window.refreshSyncBadge();
   setTimeout(() => window.flushSyncQueue(), 3000);
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
+  // Service Worker registration is centralized in offline-readiness-runtime below.
 })();
 </script>
-<script type="text/x-pos-app">
-// ============================================================================
-// v11 — ล็อกอินรายพนักงาน (per-employee Supabase session)
-// เปิดใช้ที่ ตั้งค่า > ร้านค้า > "ใช้บัญชีรายพนักงานบนเซิร์ฟเวอร์" (db.settings.perEmployeeAuth) — ปิดอยู่ = ทำงานแบบ v10 เดิม
-// เมื่อเปิด: ใส่ PIN ถูก (ตรวจในเครื่องก่อน เพื่อให้ออฟไลน์ใช้ได้) → ถ้าออนไลน์เรียก Edge Function `pin-login`
-// ตรวจ PIN ซ้ำฝั่งเซิร์ฟเวอร์ → ได้ session ของ "พนักงานคนนั้น" → RLS/สิทธิ์บนฐานข้อมูลมีผลรายคน
-// ============================================================================
-(function () {
+
+<script id="offline-readiness-runtime">
+(function(){
   'use strict';
-  const client = () => (window.getSupabaseClient ? window.getSupabaseClient() : null);
-  const MANAGER_ROLES = ['OWNER', 'MANAGER'];
-  const MANAGER_ONLY_OPS = ['adjust', 'receive', 'delete'];
-  const isNet = (e) => /Failed to fetch|NetworkError|Network request failed|Load failed|timeout|ERR_INTERNET/i.test(String((e && e.message) || e || '')) ||
-    (typeof navigator !== 'undefined' && navigator.onLine === false);
-
-  window._serverUser = null;           // { appUserId, role, name } ของ session ที่ใช้อยู่จริงบนเซิร์ฟเวอร์
-  let pendingLogin = null;             // { userId, pin, at } เก็บในหน่วยความจำเท่านั้น (ไม่เขียนลงดิสก์) เพื่อลองใหม่เมื่อกลับมาออนไลน์
-
-  window.isPerEmployeeAuth = function () { return !!(window.db && db.settings && db.settings.perEmployeeAuth); };
-  window.serverIsManager = function () {
-    if (!window.isPerEmployeeAuth()) return true;                 // โหมดเดิม: เครื่องใช้บัญชีเจ้าของร้านอยู่แล้ว
-    return !!window._serverUser && MANAGER_ROLES.includes(window._serverUser.role);
-  };
-
-  // รายการในคิวนี้ session ปัจจุบันส่งได้ไหม
-  //  - ผู้จัดการ/เจ้าของ: ส่งได้ทุกรายการ
-  //  - แคชเชียร์: ส่งได้เฉพาะรายการที่ตัวเองสร้าง และไม่ใช่งานของผู้จัดการ (ปรับสต็อก/รับของ/ลบ)
-  window.canFlushOp = function (op) {
-    if (!window.isPerEmployeeAuth()) return true;
-    const su = window._serverUser;
-    if (!su) return false;
-    if (MANAGER_ROLES.includes(su.role)) return true;
-    if (MANAGER_ONLY_OPS.includes(op.type)) return false;
-    return !op.by || toUUID(op.by) === su.appUserId;
-  };
-
-  async function readErrorBody(error) {
-    try { const c = error && error.context; if (c && typeof c.json === 'function') return await c.json(); } catch (e) { /* ignore */ }
-    return null;
+  var banner, label, detail, icon;
+  function getQueueStats(){
+    try {
+      var raw=localStorage.getItem('pos_full_db_state');
+      var state=raw?JSON.parse(raw):{};
+      var q=Array.isArray(state.syncQueue)?state.syncQueue:[];
+      var pending=q.filter(function(x){return x.status!=='failed';}).length;
+      var failed=q.filter(function(x){return x.status==='failed';}).length;
+      var bills=Array.isArray(state.bills)?state.bills:[];
+      var localPending=bills.filter(function(b){return b._rpcPending===true;}).length;
+      return {pending:Math.max(pending,localPending),failed:failed,localPending:localPending};
+    } catch(e){return {pending:0,failed:0,localPending:0};}
   }
-
-  // ---------- ล็อกอินฝั่งเซิร์ฟเวอร์ด้วย PIN ----------
-  window.serverLoginWithPin = async function (user, pin) {
-    const c = client();
-    if (!c) return { status: 'no_client' };
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return { status: 'offline' };
-    try {
-      const { data, error } = await c.functions.invoke('pin-login', { body: { user_id: toUUID(user.id), pin: String(pin) } });
-      if (error) {
-        const body = await readErrorBody(error);
-        if (body && body.error) return { status: body.error, retryAfter: body.retry_after_s, attemptsLeft: body.attempts_left };
-        return { status: isNet(error) ? 'offline' : 'error', message: error.message };
-      }
-      const { error: vErr } = await c.auth.verifyOtp({ token_hash: data.token_hash, type: 'magiclink' });
-      if (vErr) return { status: 'error', message: vErr.message };
-      window._serverUser = { appUserId: data.user.id, role: data.user.role, name: data.user.name };
-      return { status: 'ok' };
-    } catch (e) {
-      return { status: isNet(e) ? 'offline' : 'error', message: String((e && e.message) || e) };
+  function render(){
+    banner=document.getElementById('offline-readiness-banner');
+    label=document.getElementById('offline-status-label');
+    detail=document.getElementById('offline-status-detail');
+    icon=document.getElementById('offline-status-icon');
+    if(!banner||!label||!detail)return;
+    var online=navigator.onLine!==false, q=getQueueStats();
+    if(!online){
+      banner.dataset.state='offline'; icon.textContent='●'; label.textContent='ออฟไลน์ — บันทึกในเครื่อง รอซิงก์';
+      detail.textContent='บิลที่ยังไม่ซิงก์: '+q.pending+' | IndexedDB สำรองสถานะล่าสุดแบบเบื้องหลัง | ห้ามล้างข้อมูลก่อนซิงก์สำเร็จ';
+    }else if(q.failed){
+      banner.dataset.state='error'; icon.textContent='●'; label.textContent='มีรายการซิงก์ไม่ผ่าน '+q.failed+' รายการ';
+      detail.textContent='บิลรอส่ง '+q.pending+' รายการ — ตรวจข้อผิดพลาดแล้วกดซิงก์ใหม่';
+    }else if(q.pending){
+      banner.dataset.state='offline'; icon.textContent='●'; label.textContent='ออนไลน์ — มีบิลรอซิงก์ '+q.pending+' รายการ';
+      detail.textContent='อย่าล้างข้อมูลในเครื่อง จนกว่าระบบจะแจ้งว่าซิงก์สำเร็จ';
+    }else{
+      banner.dataset.state='online'; icon.textContent='●'; label.textContent='พร้อมใช้งาน';
+      detail.textContent=online?'ออนไลน์ — บิลใหม่จะเข้าคิวซิงก์กับ Supabase':'ออฟไลน์ — ใช้ข้อมูลที่มีในเครื่อง; ตรวจคิวซิงก์ก่อนปิดแอป';
     }
-  };
-
-  // session ที่มีอยู่แล้ว (เช่นเจ้าของล็อกอินด้วยอีเมล/รหัสผ่านตอนตั้งค่า) → หาว่าเป็น app_user คนไหน
-  window.resolveServerUser = async function () {
-    const c = client();
-    if (!c) return null;
-    try {
-      const s = await c.auth.getSession();
-      if (!(s && s.data && s.data.session)) { window._serverUser = null; return null; }
-      const { data } = await c.from('app_users').select('id,name,role').eq('auth_user_id', s.data.session.user.id).maybeSingle();
-      window._serverUser = data ? { appUserId: data.id, role: data.role, name: data.name } : null;
-      return window._serverUser;
-    } catch (e) { return window._serverUser; }
-  };
-
-  // เรียกหลังใส่ PIN ถูกในเครื่อง (ไม่บล็อกหน้าจอ)
-  window.afterLocalLogin = async function (user, pin) {
-    window._serverUser = null; pendingLogin = null;
-    if (!window.isPerEmployeeAuth()) return;
-    const r = await window.serverLoginWithPin(user, pin);
-    if (r.status === 'ok') {
-      window.showToast && window.showToast('เชื่อมต่อเซิร์ฟเวอร์ในนาม ' + user.name);
-      window.refreshSyncBadge && window.refreshSyncBadge();
-      if (window.flushSyncQueue) await window.flushSyncQueue(true);
-    } else if (r.status === 'offline' || r.status === 'no_client') {
-      pendingLogin = { userId: user.id, pin: String(pin), at: Date.now() };   // ลองใหม่เมื่อกลับมาออนไลน์ (เก็บในหน่วยความจำ ไม่เขียนดิสก์)
-    } else if (r.status === 'locked') {
-      window.showAlert && window.showAlert('บัญชีถูกพักชั่วคราว', `ใส่ PIN ผิดหลายครั้งบนเซิร์ฟเวอร์ — ลองใหม่ได้ในอีก ${r.retryAfter || '?'} วินาที (หรือให้ผู้จัดการปลดล็อก) ใช้งานในเครื่องได้ตามปกติ แต่ข้อมูลจะยังไม่ถูกส่งขึ้นคลาวด์`, true);
-    } else if (r.status === 'invalid_credentials') {
-      window.showAlert && window.showAlert('PIN ยังไม่ตรงกับเซิร์ฟเวอร์', 'ในเครื่องนี้ PIN ถูกต้อง แต่เซิร์ฟเวอร์ไม่รู้จัก PIN นี้ (อาจเพิ่งเปลี่ยน/เพิ่มพนักงาน ให้ผู้จัดการกดซิงค์ก่อน) — ใช้งานในเครื่องได้ แต่ข้อมูลจะยังไม่ถูกส่งขึ้นคลาวด์', true);
-    } else {
-      window.showAlert && window.showAlert('เชื่อมต่อบัญชีพนักงานไม่สำเร็จ', r.message || r.status, true);
+  }
+  window.addEventListener('online',function(){render(); if(window.flushSyncQueue) setTimeout(function(){try{window.flushSyncQueue();}catch(e){}},1200);});
+  window.addEventListener('offline',render);
+  window.addEventListener('storage',render);
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)render();});
+  var oldPersist=window.persist;
+  // The application defines persist later. Observe state without replacing its persistence logic.
+  function hookPersist(){
+    if(typeof window.persist==='function' && !window.persist.__offlineStatusWrapped){
+      var original=window.persist;
+      var wrapped=function(){var r=original.apply(this,arguments); setTimeout(render,0); return r;};
+      wrapped.__offlineStatusWrapped=true; window.persist=wrapped;
     }
-  };
-
-  window.serverLogoutLocal = async function () {
-    window._serverUser = null; pendingLogin = null;
-    const c = client();
-    if (c && window.isPerEmployeeAuth()) { try { await c.auth.signOut({ scope: 'local' }); } catch (e) { /* ignore */ } }
-  };
-
-  window.addEventListener('online', async () => {
-    if (!pendingLogin || !window.isPerEmployeeAuth()) return;
-    if (Date.now() - pendingLogin.at > 12 * 3600 * 1000) { pendingLogin = null; return; }
-    const u = (db.users || []).find((x) => x.id === pendingLogin.userId);
-    if (!u || !db.activeUser || db.activeUser.id !== u.id) { pendingLogin = null; return; }
-    const r = await window.serverLoginWithPin(u, pendingLogin.pin);
-    if (r.status === 'ok') { pendingLogin = null; if (window.flushSyncQueue) window.flushSyncQueue(true); }
+  }
+  var ticks=0, hookTimer=setInterval(function(){hookPersist(); if(++ticks>60)clearInterval(hookTimer);},250);
+  window.addEventListener('load',function(){
+    render();
+    // GitHub Pages project sites need a relative SW path so scope stays inside this repository.
+    if('serviceWorker' in navigator && location.protocol==='https:'){
+      navigator.serviceWorker.register('./sw.js',{scope:'./'}).then(function(){
+        if(navigator.serviceWorker.controller) render();
+      }).catch(function(e){console.warn('Offline app-shell registration failed:',e);});
+    }
+    setInterval(render,5000);
   });
-
-  // ล็อกเครื่อง → ตัด session ของพนักงานคนนั้นทิ้ง (คนถัดไปต้องใส่ PIN ของตัวเอง)
-  const origLock = window.lockPOS;
-  if (typeof origLock === 'function') {
-    window.lockPOS = function () { const r = origLock.apply(this, arguments); window.serverLogoutLocal(); return r; };
-  }
-
-  // หลังตรวจสถานะล็อกอินร้านค้า (เจ้าของใช้อีเมล/รหัสผ่านตอนตั้งค่าเครื่อง) ให้รู้ว่าใครคือ session นี้
-  const origRefresh = window.refreshAuthStatus;
-  if (typeof origRefresh === 'function') {
-    window.refreshAuthStatus = async function () {
-      const r = await origRefresh.apply(this, arguments);
-      if (window.isPerEmployeeAuth() && !window._serverUser) await window.resolveServerUser();
-      return r;
-    };
-  }
+  window.smartPOSOfflineStatus={refresh:render,queueStats:getQueueStats};
 })();
 </script>
-<script>
-// ============================================================================
-// v11 — ที่เก็บข้อมูลแบบ IndexedDB (posStore) + ตัวโหลดแอป
-// เดิมทั้งฐานข้อมูลถูก JSON.stringify เก็บใน localStorage ก้อนเดียว (จำกัด ~5MB, เขียนทั้งก้อนทุกครั้ง)
-// ใหม่: เก็บ "ข้อมูลหลัก" (สินค้า/ลูกค้า/ตั้งค่า/คิวซิงค์ ...) เป็นระเบียนเดียวใน IndexedDB (structured clone)
-//       ส่วน "บิล" แยกเป็นรายบิล เขียนเฉพาะบิลที่เปลี่ยนจริง → บิลสะสมหลายหมื่นใบก็ไม่ช้าลง
-// IndexedDB อ่านแบบ async จึงต้องรอโหลดก่อนแล้วค่อยรันสคริปต์ของแอป (สคริปต์แอปถูกเปลี่ยนเป็น type="text/x-pos-app")
-// ============================================================================
-(function () {
-  'use strict';
-  const DB_NAME = 'pos_yojionline', DB_VERSION = 1;
-  const LS_KEY = 'pos_full_db_state', LS_LEGACY_KEY = 'pos_enterprise_state';
-  const RECENT_MS = 7 * 86400000;           // บิลใน 7 วันล่าสุดตรวจการเปลี่ยนแปลงทุกครั้งที่บันทึก; เก่ากว่านี้เขียนเมื่อถูก touchBill เท่านั้น
-  const hasIDB = typeof indexedDB !== 'undefined' && !!indexedDB;
 
-  let dbPromise = null, fallback = !hasIDB;
-  let latest = null, timer = null, running = null, again = false, cleared = false, readOnly = false;
-  const sigs = new Map();                    // billId -> ลายเซ็น JSON (บิลล่าสุด) | null (เก่า/สะอาด)
-  const touched = new Set();
-
-  const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-  const txDone = (tx) => new Promise((res, rej) => {
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-    tx.onabort = () => rej(tx.error || new Error('IndexedDB transaction aborted'));
-  });
-  function open() {
-    if (dbPromise) return dbPromise;
-    dbPromise = new Promise((res, rej) => {
-      const r = indexedDB.open(DB_NAME, DB_VERSION);
-      r.onupgradeneeded = () => {
-        const d = r.result;
-        if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
-        if (!d.objectStoreNames.contains('bills')) d.createObjectStore('bills', { keyPath: 'id' });
-      };
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-      r.onblocked = () => rej(new Error('IndexedDB ถูกบล็อก (ปิดแท็บอื่นของแอปนี้แล้วลองใหม่)'));
-    });
-    return dbPromise;
-  }
-
-  const replacer = (k, v) => (k === 'activeUser' ? undefined : v);
-  const sigOf = (b) => JSON.stringify(b);
-  const isRecent = (b) => (Date.now() - (b.time || 0)) < RECENT_MS;
-
-  function loadLegacy() {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; }
-  }
-
-  function splitDb(db) {
-    const meta = {};
-    Object.keys(db).forEach((k) => { if (k !== 'bills' && k !== 'activeUser') meta[k] = db[k]; });
-    return meta;
-  }
-
-  // เขียนสแนปช็อตลง IndexedDB: meta 1 ระเบียน + เฉพาะบิลที่เปลี่ยน/ใหม่ + ลบบิลที่หายไป
-  async function writeSnapshot(db, replaceAll) {
-    const d = await open();
-    const tx = d.transaction(['kv', 'bills'], 'readwrite');
-    const kv = tx.objectStore('kv'), bs = tx.objectStore('bills');
-    if (replaceAll) { bs.clear(); sigs.clear(); touched.clear(); }
-    const meta = splitDb(db);
-    try { kv.put(meta, 'meta'); }
-    catch (e) { kv.put(JSON.parse(JSON.stringify(meta, replacer)), 'meta'); }   // มีค่าที่ clone ไม่ได้ → แปลงผ่าน JSON
-    const seen = new Set();
-    const pendingSigs = [];
-    (db.bills || []).forEach((b) => {
-      if (!b || b.id == null) return;
-      seen.add(b.id);
-      const known = sigs.has(b.id);
-      let write = false, sg = null;
-      if (!known || touched.has(b.id)) { write = true; }
-      else if (isRecent(b)) { sg = sigOf(b); write = sg !== sigs.get(b.id); }
-      if (write) {
-        if (sg === null) sg = sigOf(b);
-        try { bs.put(b); } catch (e) { bs.put(JSON.parse(sg)); }
-        pendingSigs.push([b.id, isRecent(b) ? sg : null]);
-      }
-    });
-    sigs.forEach((_, id) => { if (!seen.has(id)) { bs.delete(id); pendingSigs.push([id, undefined]); } });
-    await txDone(tx);
-    pendingSigs.forEach(([id, sg]) => { if (sg === undefined) sigs.delete(id); else sigs.set(id, sg); });
-    touched.clear();
-  }
-
-  function primeSigs(bills) {
-    sigs.clear();
-    bills.forEach((b) => sigs.set(b.id, isRecent(b) ? sigOf(b) : null));
-  }
-
-  async function migrateLegacy(legacy) {
-    await writeSnapshot(legacy, true);
-    // เก็บสำเนาของเดิมไว้ใน IndexedDB ก่อนค่อยลบออกจาก localStorage (กันพลาด)
-    const raw = localStorage.getItem(LS_KEY);
-    const d = await open();
-    const tx = d.transaction('kv', 'readwrite');
-    if (raw) tx.objectStore('kv').put(raw, 'legacy_backup');
-    await txDone(tx);
-    try { localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_LEGACY_KEY); } catch (e) { /* ignore */ }
-  }
-
-  const api = {
-    onError: null,
-    get fallback() { return fallback; },
-    markFallback() { fallback = true; },
-
-    async load() {
-      if (fallback) return loadLegacy();
-      try {
-        const d = await open();
-        const tx = d.transaction(['kv', 'bills'], 'readonly');
-        const [meta, bills] = await Promise.all([reqP(tx.objectStore('kv').get('meta')), reqP(tx.objectStore('bills').getAll())]);
-        if (!meta) {
-          const legacy = loadLegacy();
-          if (legacy) { await migrateLegacy(legacy); primeSigs(legacy.bills || []); return legacy; }
-          return null;
-        }
-        bills.sort((a, b) => ((a.time || 0) - (b.time || 0)) || String(a.id).localeCompare(String(b.id)));
-        primeSigs(bills);
-        return Object.assign({}, meta, { bills });
-      } catch (e) {
-        console.warn('IndexedDB ใช้งานไม่ได้ — ถอยกลับไปใช้ localStorage', e);
-        fallback = true;
-        return loadLegacy();
-      }
-    },
-
-    get readOnly() { return readOnly; },
-
-    save(db) {
-      if (cleared || readOnly || !db) return;
-      latest = db;
-      if (fallback) {
-        try { localStorage.setItem(LS_KEY, JSON.stringify(db, replacer)); }
-        catch (e) { if (api.onError) api.onError(e); }
-        return;
-      }
-      clearTimeout(timer);
-      timer = setTimeout(() => { api.flush(); }, 60);
-    },
-
-    flush() {
-      clearTimeout(timer);
-      if (cleared || readOnly || fallback || !latest) return Promise.resolve();
-      if (running) { again = true; return running; }
-      running = (async () => {
-        try { await writeSnapshot(latest, false); }
-        catch (e) { if (api.onError) api.onError(e); }
-        finally {
-          running = null;
-          if (again) { again = false; api.flush(); }
-        }
-      })();
-      return running;
-    },
-
-    touchBill(id) { touched.add(id); },
-
-    async replaceAll(db) {
-      if (fallback) { localStorage.setItem(LS_KEY, JSON.stringify(db, replacer)); return; }
-      clearTimeout(timer);
-      if (running) await running;
-      await writeSnapshot(db, true);
-    },
-
-    async clear() {
-      cleared = true; clearTimeout(timer); latest = null;
-      try { localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_LEGACY_KEY); } catch (e) { /* ignore */ }
-      if (fallback) return;
-      try {
-        if (running) await running;
-        const d = await open();
-        const tx = d.transaction(['kv', 'bills'], 'readwrite');
-        tx.objectStore('kv').clear(); tx.objectStore('bills').clear();
-        await txDone(tx);
-      } catch (e) { console.warn('clear failed', e); }
-    },
-
-    // ที่เก็บ session ของ Supabase Auth (แทน localStorage) — supabase-js รองรับ storage แบบ async
-    authStorage: {
-      async getItem(k) {
-        if (fallback) return localStorage.getItem('sb:' + k);
-        const d = await open();
-        const v = await reqP(d.transaction('kv').objectStore('kv').get('auth:' + k));
-        return v == null ? null : v;
-      },
-      async setItem(k, v) {
-        if (fallback) { localStorage.setItem('sb:' + k, v); return; }
-        const d = await open();
-        const tx = d.transaction('kv', 'readwrite');
-        tx.objectStore('kv').put(String(v), 'auth:' + k);
-        await txDone(tx);
-      },
-      async removeItem(k) {
-        if (fallback) { localStorage.removeItem('sb:' + k); return; }
-        const d = await open();
-        const tx = d.transaction('kv', 'readwrite');
-        tx.objectStore('kv').delete('auth:' + k);
-        await txDone(tx);
-      }
-    }
-  };
-  window.posStore = api;
-
-  // บันทึกให้ทันก่อนปิด/ซ่อนแท็บ
-  window.addEventListener('pagehide', () => { api.flush(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') api.flush(); });
-
-  // ---------- ตัวโหลดแอป ----------
-  async function boot() {
-    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
-    let saved = null;
-    try {
-      saved = await Promise.race([
-        api.load(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('IndexedDB timeout')), 8000))
-      ]);
-    } catch (e) {
-      console.warn(e); api.markFallback(); saved = loadLegacy();
-    }
-    window.__POS_SAVED__ = saved;
-
-    // แอปเปิดซ้ำอีกแท็บ → แท็บที่สองเป็น "อ่านอย่างเดียว" (ไม่บันทึก) กันข้อมูลสองแท็บเขียนทับกัน
-    try {
-      if (navigator.locks && navigator.locks.request) {
-        await new Promise((resolve) => {
-          navigator.locks.request('pos-single-tab', { ifAvailable: true }, (lock) => {
-            if (!lock) { readOnly = true; resolve(); return undefined; }
-            resolve();
-            return new Promise(() => {});          // ถือล็อกไว้จนกว่าจะปิดแท็บ
-          });
-        });
-      }
-    } catch (e) { /* ไม่มี Web Locks: ข้าม */ }
-    if (readOnly) setTimeout(() => { alert('⚠️ แอปนี้เปิดอยู่ในอีกแท็บ/หน้าต่างหนึ่งแล้ว\n\nแท็บนี้จะ "ไม่บันทึกข้อมูล" เพื่อกันข้อมูลทับกัน — กรุณาปิดแท็บนี้แล้วใช้แท็บเดิม'); }, 500);
-
-    // สคริปต์ของแอปลงทะเบียน DOMContentLoaded/load ไว้ — ตอนนี้เหตุการณ์ผ่านไปแล้ว จึงเก็บไว้แล้วเรียกเองหลังโหลดครบ
-    const handlers = [];
-    const origDoc = document.addEventListener, origWin = window.addEventListener;
-    document.addEventListener = function (t, f, o) { if (t === 'DOMContentLoaded') { handlers.push(f); return; } return origDoc.call(this, t, f, o); };
-    window.addEventListener = function (t, f, o) { if (t === 'DOMContentLoaded' || t === 'load') { handlers.push(f); return; } return origWin.call(this, t, f, o); };
-    try {
-      document.querySelectorAll('script[type="text/x-pos-app"]').forEach((el) => {
-        const s = document.createElement('script');
-        s.textContent = el.textContent;
-        document.body.appendChild(s);
-      });
-    } finally {
-      document.addEventListener = origDoc; window.addEventListener = origWin;
-    }
-    handlers.forEach((h) => setTimeout(() => {
-      try { h.call(document, new Event('DOMContentLoaded')); } catch (e) { console.error(e); }
-    }, 0));
-  }
-  boot();
-})();
-</script>
 </body>
 </html>
