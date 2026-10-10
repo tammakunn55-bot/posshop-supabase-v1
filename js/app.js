@@ -6640,138 +6640,18 @@ window.persist = function (...args) {
 
 // Safe Push Function with Optimistic Concurrency Control (OCC)
 window.pushFullStateToSupabaseSafe = async function (force = false) {
-  try {
-    const client = getSupabaseClient();
-    if (!client) return false;
-
-    const lastKnownSync = localStorage.getItem(LAST_SYNCED_KEY);
-    const nowIso = new Date().toISOString();
-
-    if (!force) {
-      const { data: remoteData, error: fetchErr } = await client
-        .from('pos_state')
-        .select('updated_at')
-        .eq('id', POS_STATE_ROW_ID)
-        .maybeSingle();
-
-      if (!fetchErr && remoteData && remoteData.updated_at) {
-        const remoteTime = new Date(remoteData.updated_at).getTime();
-        const localKnownTime = lastKnownSync ? new Date(lastKnownSync).getTime() : 0;
-
-        if (remoteTime > localKnownTime + 1000) {
-          console.warn("[Conflict Engine] Supabase has newer state. Aborting push to prevent data overwrite.");
-          
-          if (typeof window.logSystemError === 'function') {
-            window.logSystemError('SYNC_CONFLICT', `Remote updated at ${remoteData.updated_at}, local known was ${lastKnownSync}`);
-          }
-
-          updateSyncStatusBadge('offline', null);
-          
-          if (typeof window.showCustomConfirm === 'function') {
-            window.showCustomConfirm(
-              "⚠️ ตรวจพบข้อมูลขัดแย้ง (Data Conflict)",
-              "พบว่ามีเครื่องอื่นอัปเดตข้อมูลขึ้นระบบขณะที่คุณกำลังใช้งาน คุณต้องการบังคับซิงค์ (Force Sync) ข้อมูลในเครื่องนี้ขึ้นไปทับหรือไม่?",
-              async () => {
-                await window.forceSyncNow();
-              }
-            );
-          } else if (typeof window.showAlert === 'function') {
-            window.showAlert(
-              "⚠️ ตรวจพบข้อมูลขัดแย้ง",
-              "มีเครื่องอื่นอัปเดตข้อมูลขึ้นระบบก่อนหน้า กรุณากดปุ่ม 'บังคับซิงค์' หากต้องการเขียนทับ",
-              true
-            );
-          }
-          return false;
-        }
-      }
-    }
-
-    const { error: upsertErr } = await client
-      .from('pos_state')
-      .upsert({ id: POS_STATE_ROW_ID, data: db, updated_at: nowIso });
-
-    if (upsertErr) throw upsertErr;
-
-    localStorage.setItem(LAST_SYNCED_KEY, nowIso);
-    updateSyncStatusBadge('synced', nowIso);
-    return true;
-  } catch (err) {
-    console.error("[Conflict Engine] Push failed:", err);
-    updateSyncStatusBadge('offline', null);
-    if (typeof window.logSystemError === 'function') {
-      window.logSystemError('PUSH_FAILED', err.message, err.stack);
-    }
-    return false;
-  }
+  // This project uses relational Supabase tables, not public.pos_state.
+  // Do not write the entire local demo DB over a relational schema.
+  console.warn('[SmartPOS] Legacy full-state sync disabled: public.pos_state is not part of this schema.');
+  updateSyncStatusBadge('offline', null);
+  return false;
 };
 
 async function checkAndPullNewerStateOnStartup() {
-  const withTimeout = (promise, ms) => Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(() => resolve({ timedOut: true }), ms))
-  ]);
-
-  try {
-    const client = getSupabaseClient();
-    if (!client) {
-      updateSyncStatusBadge('offline', null);
-      return;
-    }
-
-    const result = await withTimeout(
-      client.from('pos_state').select('data, updated_at').eq('id', POS_STATE_ROW_ID).maybeSingle(),
-      6000
-    );
-
-    if (result.timedOut) {
-      updateSyncStatusBadge('offline', null);
-      return;
-    }
-
-    const { data, error } = result;
-    if (error || !data) {
-      updateSyncStatusBadge(data ? 'synced' : 'never', null);
-      return;
-    }
-
-    const lastKnownSync = localStorage.getItem(LAST_SYNCED_KEY);
-    if (lastKnownSync && new Date(data.updated_at) <= new Date(lastKnownSync)) {
-      updateSyncStatusBadge('synced', data.updated_at);
-      return;
-    }
-
-    if (typeof window.runMigrations === 'function') await window.runMigrations(data.data);
-    if (typeof window.autoRepairIfNeeded === 'function') await window.autoRepairIfNeeded(data.data);
-    
-    // Explicit global reassignment
-    window.db = data.data;
-    if (typeof db !== 'undefined') { db = window.db; }
-    
-    localStorage.setItem(LAST_SYNCED_KEY, data.updated_at);
-    updateSyncStatusBadge('synced', data.updated_at);
-
-    if (typeof renderAll === 'function') renderAll();
-    if (typeof updateShiftUI === 'function') updateShiftUI();
-    if (typeof updateLowStockBadge === 'function') updateLowStockBadge();
-    if (typeof updateSheetsPendingCount === 'function') updateSheetsPendingCount();
-    if (typeof checkStorageQuota === 'function') checkStorageQuota();
-
-    const lockScreen = document.getElementById('lock-screen');
-    if (lockScreen) {
-      if (!window.db.pinHash) {
-        lockScreen.style.display = 'none';
-      } else {
-        lockScreen.style.display = 'flex';
-        if (window.db.security && window.db.security.lockUntil && window.db.security.lockUntil > Date.now() && typeof startMainLockCountdown === 'function') {
-          startMainLockCountdown();
-        }
-      }
-    }
-  } catch (err) {
-    console.error("Startup sync check failed:", err);
-    updateSyncStatusBadge('offline', null);
-  }
+  // V4 uses relational tables; never attempt to read the deprecated pos_state row.
+  console.info('[SmartPOS] Legacy pos_state startup pull skipped; relational sync must be used.');
+  updateSyncStatusBadge('offline', null);
+  return;
 }
 
 function updateSyncStatusBadge(state, timestamp) {
