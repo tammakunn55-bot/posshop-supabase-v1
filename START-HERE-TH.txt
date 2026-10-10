@@ -1,0 +1,44 @@
+SMARTPOS — GITHUB STARTER (RECOVERED SOURCE)
+===========================================
+
+ไฟล์ชุดนี้จัดทำจากโปรเจกต์ SmartPOS V10 ที่มีอยู่ใน Library เดิมของผู้ใช้
+และเพิ่ม Clean Base V4 ไว้ในโฟลเดอร์แยก เพื่อไม่ให้โค้ดต่างรุ่นปะปนกัน
+
+โครงสร้าง
+---------
+- index.html, style.css, js/ : หน้าเว็บและโค้ดของโปรเจกต์เดิม V10
+- README.md : คู่มือเดิมของโปรเจกต์
+- supabase-v4-upgrade/ : โค้ด/SQL Clean Base V4 ที่ยังต้องตรวจและปรับให้เข้ากับหน้าเว็บก่อนใช้งาน
+
+เริ่มเผยแพร่หน้าเว็บเดิมบน GitHub Pages
+---------------------------------------
+1. แตก ZIP นี้
+2. สร้าง GitHub Repository ใหม่
+3. อัปโหลดไฟล์และโฟลเดอร์จากภายใน SmartPOS-GitHub-STARTER-RECOVERED ไปไว้ที่ root ของ Repository
+   (ต้องเห็น index.html ที่ root ไม่ใช่เห็นแค่โฟลเดอร์ SmartPOS-GitHub-STARTER-RECOVERED)
+4. ไปที่ Settings > Pages
+5. เลือก Deploy from a branch, Branch: main, Folder: /(root), แล้ว Save
+6. รอ GitHub Pages เผยแพร่ จากนั้นเปิด URL ที่ GitHub แสดงให้
+
+คำเตือนสำคัญ
+------------
+- หน้าเว็บที่ root เป็นโปรเจกต์เดิม V10 ที่กู้คืน ไม่ใช่การอัปเกรดเป็น Supabase V4 แล้ว
+- ห้ามย้ายไฟล์ใน supabase-v4-upgrade/ ไปทับไฟล์ js/ หรือเปลี่ยน script ใน index.html ให้โหลดโค้ด V4 จนกว่าจะตรวจความเข้ากันได้เสร็จ
+- จากการตรวจ DOM ID พบว่าไฟล์ V4 อ้างถึงองค์ประกอบหน้าเว็บบางรายการที่ไม่มีใน index.html รุ่นเดิม จึงยังไม่ควรต่อเข้าด้วยกันโดยตรง
+- SQL ใน supabase-v4-upgrade/SMARTPOS_V4_ONE_RUN_INSTALL.sql ออกแบบสำหรับโปรเจกต์ฐานข้อมูลทดสอบใหม่ ไม่ใช่ migration สำหรับฐานข้อมูลจริง
+- ห้ามเผยแพร่ Supabase service_role key ในไฟล์หน้าเว็บ, JavaScript หรือ GitHub
+- ก่อนใช้งานร้านจริง ต้องทดสอบการเข้าสู่ระบบ การขาย สต็อก สำรอง/กู้คืน และสิทธิ์ RLS บนระบบทดสอบก่อน
+
+ผลตรวจไฟล์
+-----------
+- พบ index.html และไฟล์ทรัพยากรที่อ้างถึงในแพ็กเกจเดิม
+- index.html โหลด js/app.js
+- Clean Base V4 ถูกเก็บแยกไว้ ไม่ได้เปิดใช้งานกับหน้าเว็บเดิมโดยอัตโนมัติ
+- การตรวจครั้งนี้เป็นการตรวจโครงสร้างไฟล์ ไม่ใช่การยืนยันว่าระบบเชื่อม Supabase จริงสำเร็จ
+
+ตรวจไฟล์ก่อนเผยแพร่
+-------------------
+- ใน GitHub Actions จะมี workflow ตรวจโครงสร้างไฟล์และไวยากรณ์ JavaScript เมื่อ push หรือเปิด pull request
+- สามารถตรวจในเครื่องได้ด้วย Node.js โดยรัน: node scripts/check-project.mjs
+- Workflow นี้ไม่ยืนยันการเชื่อม Supabase, RLS, การขาย หรือการทำงานจริงใน browser
+- อ่าน V4-COMPATIBILITY-REVIEW-TH.txt ก่อนพยายามนำ Clean Base V4 มารวมกับหน้าเว็บเดิม

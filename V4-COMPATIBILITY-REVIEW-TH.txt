@@ -1,0 +1,63 @@
+รายงานตรวจความเข้ากันได้ SmartPOS V10 กับ Clean Base V4
+=====================================================
+
+สถานะ: ยังไม่ควรรวมโค้ด V4 เข้ากับหน้าเว็บ V10 โดยตรง
+
+สิ่งที่ตรวจแล้ว
+---------------
+- index.html ของหน้าเว็บเดิมโหลด style.css และ js/app.js
+- index.html ไม่ได้โหลด js/part1.js ถึง js/part4.js แยก และไม่ได้โหลด js/supabase-integration.js แยก
+- ไฟล์ JavaScript ใน js/ และ supabase-v4-upgrade/ ผ่าน node --check ณ วันที่สร้างรายงาน
+- มีการอ้างถึง DOM ID จาก V4 ที่ไม่มีอยู่ใน index.html เดิม ซึ่งแสดงว่า UI และโค้ด V4 ยังไม่เข้ากันครบ
+
+ตัวอย่าง DOM ID ที่ V4 ต้องใช้แต่หน้าเว็บเดิมไม่มี
+----------------------------------------------------
+01-core.js:
+- account-login-error-text
+- account-login-lockout-text
+- bestseller-row
+- bestseller-row-wrap
+- btn-product-selection-back
+- first-time-setup-screen
+- login-user-id
+- login-user-password
+
+02-sales-stock.js:
+- cat-parent-id
+- draft-history-month-filter
+- draft-history-supplier-filter
+- order-draft-footer
+- order-draft-history-list
+- order-draft-items-list
+- order-product-search
+- order-select-product
+- order-select-supplier
+- receive-photo-input
+- stock-bulk-action-bar
+
+04-supabase.js:
+- codecfg-preview
+- setup-owner-email
+- setup-store-name
+- setup-supabase-key
+- setup-supabase-url
+- setup-user-password
+- setup-user-password-confirm
+
+รายการนี้เป็นตัวอย่างจากการค้นหา ID แบบข้อความ ไม่ใช่การพิสูจน์ว่าทุก ID จำเป็นในทุกเส้นทางการทำงาน
+
+ข้อเสนอขั้นถัดไป
+----------------
+1. ให้หน้าเว็บ V10 เดิมเป็นเวอร์ชันที่เผยแพร่ได้ก่อน และเก็บสำเนาสำรอง
+2. ตรวจฐานข้อมูล/ตาราง/RPC และ RLS ของ Supabase V4 บนโปรเจกต์ทดสอบ
+3. ทำแผน mapping ระหว่างโครงสร้างข้อมูล V10 กับ V4 ก่อนย้ายข้อมูล
+4. ปรับ UI ที่ขาดและทดสอบการขาย สต็อก คืนสินค้า และยกเลิกบิลด้วยข้อมูลทดสอบ
+5. เปลี่ยนหน้าเว็บให้โหลด V4 หลังผ่านการทดสอบเท่านั้น
+
+ข้อควรระวัง
+-----------
+- แอปเดิมมี Supabase URL และ anon public key ค่าเริ่มต้นฝังอยู่ใน js/app.js
+- anon key ใช้ใน browser ได้ตามรูปแบบ Supabase แต่ความปลอดภัยต้องอาศัย RLS และนโยบายสิทธิ์ที่ถูกต้อง
+- ห้ามนำ service_role key ไปใส่ใน JavaScript ที่เผยแพร่สู่สาธารณะ
+- SQL V4 ในโฟลเดอร์ supabase-v4-upgrade ออกแบบสำหรับฐานข้อมูลทดสอบใหม่ ไม่ใช่ migration สำหรับฐานข้อมูลร้านจริง
+- การตรวจนี้เป็น static review ไม่ใช่การทดสอบ browser จริงหรือเชื่อม Supabase จริง
