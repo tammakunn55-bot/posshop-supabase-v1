@@ -1,2 +1,0 @@
-﻿source_store_id,product_id,product_name,brand,description,categories,group_name,image_emoji,image_url,image_storage_path,image_filename,is_deleted,variant_id,sku,barcode,size_name,unit,cost,current_cost,last_cost,price,stock,min_stock,min_margin_pct,variant_active,fraction_id,fraction_name,fraction_multiplier,fraction_price
-,P-EXAMPLE,ตัวอย่างสินค้า,ตัวอย่างแบรนด์,รายละเอียดสินค้า,เครื่องมือ|อุปกรณ์,กลุ่มสินค้า,📦,,,P-EXAMPLE.jpg,false,V-EXAMPLE,SKU-EXAMPLE,8850000000000,มาตรฐาน,ชิ้น,10,10,10,15,0,0,20,true,F-EXAMPLE,ครึ่งชิ้น,0.5,8
